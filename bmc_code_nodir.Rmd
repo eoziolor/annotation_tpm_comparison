@@ -1,0 +1,3577 @@
+---
+title: "giga_code"
+author: "Oziolor"
+date: "12/21/2019"
+output: html_document
+---
+
+# Only transcripts removed
+
+* Selected a sample from Human Protein Atlas (pancreas) ERR315479
+
+# Ensembl genome downloaded
+
+```{bash}
+#!/bin/bash
+set -e
+set -o pipefail
+
+#############################################################################
+# Creating a usage sentence
+usage="To use this Genome pipeline please specify the following: $(basename $0) [-d reference transcriptome parent] [-r number of the release you want to update to]"
+
+## Printing it when there are no arguments
+if [ "$#" == "0" ] || [ "$1" == "--help" ]; then
+        printf -- "\033[33m$usage. \033[0m\n" >&2
+        exit
+fi
+
+# Setting up options for the script
+while getopts 'd:r:h' OPTION; do
+	case "$OPTION" in
+		d) parent="$OPTARG"
+		printf -- "\033[32m Transcriptomes will be placed in $OPTARG. \033[0m\n"
+		;;
+		r) release="$OPTARG"
+		printf -- "\033[32m The Ensembl release obtained will be $OPTARG. \033[0m\n"
+		;;
+		h) printf -- "\033[33m$usage. \033[0m\n" >&2
+		exit 1
+		;;
+		?) printf -- "\033[33m$usage. \033[0m\n" >&2
+		exit 1
+		;;
+	esac
+done
+
+# Checking if mandatory options are prsent for each mandatory flag
+if [ "x" == "x$parent" ]; then
+  printf -- "\033[31m -d [path-to-transcriptome-folder] option is required. Please select the path to directory where you want all your transcriptomes.\033[0m\n"
+  exit
+fi
+
+if [ "x" == "x$release" ]; then
+  printf -- "\033[31m -e [release number] option is required. Please enter the Ensembl release number which you want used.\033[0m\n"
+  exit
+fi
+
+### Beyond Meat of the script
+cd $parent
+# Creating structure
+mkdir human
+
+# Setting variables to iterate over
+common=human
+latin=homo_sapiens
+# cDNA and ncRNA
+for i in {1..7}; do
+	com=$(echo $common | cut -f $i -d' ')
+	lat=$(echo $latin | cut -f $i -d' ')
+	echo $lat
+	cd $parent/$com
+	wget ftp://ftp.ensembl.org/pub/release-"${release}"/fasta/"${lat}"/cdna/*.cdna.all.fa.gz
+	wget ftp://ftp.ensembl.org/pub/release-"${release}"/fasta/"${lat}"/ncrna/*ncrna.fa.gz
+	zcat *.cdna.all.fa.gz *ncrna.fa.gz | gzip > $lat.fa.gz
+done
+
+
+# GTF and tx2gene
+for i in {1..7}; do
+	com=$(echo $common | cut -f $i -d' ')
+	lat=$(echo $latin | cut -f $i -d' ')
+	echo $lat
+	cd $parent/$com
+	wget ftp://ftp.ensembl.org/pub/release-"${release}"/gtf/"${lat}"/*"${release}".gtf.gz
+	mv $parent/$com/*.gtf.gz $parent/$com/${lat}.gtf.gz
+	zcat $parent/$com/${lat}.gtf.gz | sed 's/.*gene_id\ "//g' | sed 's/".*transcript_id\ "/\t/g' | sed 's/".*//g' | grep -v "^#" | awk '$2!=""' | sort -k2 |  uniq > $parent/$com/tx2gene.tsv
+done
+
+# Indexing salmon full
+cd $parent
+for i in {1..7}; do
+	com=$(echo $common | cut -f $i -d' ')
+	lat=$(echo $latin | cut -f $i -d' ')
+	my_dir=$parent/$com
+	my_genome=$my_dir/$lat.fa.gz
+	my_out=$my_dir/salmon_index
+	my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+	
+	$my_salmon index \
+	-t $my_genome \
+	-i $my_out \
+	--type quasi \
+	-k 31
+done
+
+# Copying transcriptomes into _gfp folders
+cp $parent/cyno/macaca_fascicularis.fa.gz cyno_gfp/
+cp $parent/human/homo_sapiens.fa.gz human_gfp/
+
+# Cyno
+cd $parent/cyno_gfp/
+zcat macaca_fascicularis.fa.gz eGFP.fa.gz | gzip > macaca_fascicularis_eGFP.fa.gz
+rm eGFP.fa.gz
+rm macaca_fascicularis.fa.gz
+# Human
+cd $parent/human_gfp/
+zcat homo_sapiens.fa.gz eGFP.fa.gz | gzip > homo_sapiens_eGFP.fa.gz 
+rm eGFP.fa.gz
+rm homo_sapiens.fa.gz
+
+# Exit
+printf -- '\n';
+exit 0;
+
+```
+
+
+## Selecting gene set to iterate
+
+* Once human sample is selected, I took the quant file and grabbed a random gene from 10 sets of bins, separated by expression levels betweeen 0.5 and 5 log10 transcripts per million (tpm)
+
+```{r}
+library(dplyr)
+library(biomaRt)
+library(data.table)
+
+# Reading in quantitation of pancreatic sample from HPA
+panc<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/quant.sf", header = TRUE, sep = '\t')
+
+# Plotting histogram of it
+hist(log10(panc[,3]), breaks = 1000)
+
+## Picking genes with TPM from log 1 to 5; it has beeen commeented out, so that randomization doesn't save a different set every time that this script is re-ran
+
+# df<-panc[1:10,]
+# 
+# k=0
+# for(i in seq(from = 0.5, to = 5, by = 0.5)){
+#   k=k+1
+#   temp<-panc %>% filter(log10(TPM) > i-0.5 & log10(TPM) < i)
+#   df[k,]<-head(temp[sample(1:nrow(temp)),],n=1)
+# }
+# 
+# write.table(df,"/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', col.names = TRUE, row.names = FALSE, quote = FALSE)
+
+# Reading in genes from the initial selection
+df<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+
+# Removing transcript version from names
+ten<-gsub("[.].*","",df$Name)
+
+# Defining species name
+sp <-  "hsapiens"
+
+# Using Ensembl to pull transcript sequence
+# Establishing Ensembl connection
+gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                     dataset = paste0(sp,"_gene_ensembl"),
+                     host    = "www.ensembl.org")
+
+# Pulling in transcript sequence
+tseq <- getSequence(id = ten,
+                    type = "ensembl_transcript_id", 
+                    seqType = "cdna", 
+                    mart = gene_mart)
+
+# Adding "_test" string to the header of genes to be able to trace them afterwards
+tseq$ensembl_transcript_id<-gsub("$","_test",tseq$ensembl_transcript_id)
+
+# Saving sequences as fasta file
+exportFASTA(tseq, "/proprietary/tpm_genome_analysis/data/human_sample/theten.fa")
+```
+
+## Subsampling human genome
+* First taking the sequences of the selected transcripts out of the ensembl transcriptome
+* Subsampling into 99 different sizes (from 1-99% of original size based on number of transcripts included)
+
+```{bash}
+# Defining locations for programs and files
+mysub=/proprietary//proprietary/program/meme/libexec/meme-5.0.5/fasta-subsample
+myhomo=/proprietary/proprietary/data/sequencing/genomes/human/homo_sapiens.fa
+subhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_homo_sapiens.fa
+myout=/proprietary/proprietary/size_genome/data/genomes_human/
+genes=/proprietary/proprietary/size_genome/data/genes_human/theten.fa
+
+# Grabbing sequences to remove into a variable
+string=$(cat $genes | grep "^>" | sed 's/^>//g' | sed 's/\_test//g' | tr '\r\n' '\\|' | sed 's/^/\"/g' | sed 's/$/\"/g')
+
+# Removing them from linearized fasta and re-printing
+awk '{ if ((NR>1)&&($0~/^>/)) { printf("\n%s", $0); } else if (NR==1) { printf("%s", $0); } else { printf("\t%s", $0); } }' $myhomo | grep -v $string - | tr "\t" "\n" > ${subhomo}
+
+# Now re-subset, but on the genome that doesn't have those 10 genes
+for i in {001..099}; do
+for j in {001..100}; do
+k=$(echo 2282*$i | bc)
+rand=$(echo $RANDOM)
+bsub -q medium -app large -J "hs_${k}_${j}" -n 1,1 -M 8GB -R "span[hosts=1] rusage[mem=8GB]" -o "hs_${k}_${j}.err" -e "hs_${k}_${j}.err" "$mysub $subhomo $k -seed $rand | gzip > $myout/hs_${k}_${j}.fa.gz"
+done
+done
+```
+
+## Re-implanting "_test" transcripts into subsampled genomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human/
+genes=/proprietary/proprietary/size_genome/data/genes_human/theten.fa
+
+cd $parent
+for i in $(ls -1); do
+    gzip -c $genes >> $parent/$i
+done
+```
+
+## Indexing 9900 genomes using Salmon
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human/
+cd $parent
+
+# Indexing
+for i in $(ls -1); do
+short=$(echo ${i} | sed 's/\.fa\.gz//g')
+my_genome=${parent}/${i}
+my_out=${parent}/${short}_index
+my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
+"${my_salmon} index \
+-t ${my_genome} \
+-i ${my_out} \
+--type quasi \
+-k 31"
+done
+```
+
+## Submitting quantitation
+* The name of the selected HPA sample is itox0000633
+
+```{bash}
+# Defining directories and samples
+parent=/proprietary/proprietary/size_genome/data/genomes_human/
+cd $parent
+sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+name=itox000633
+
+for i in $(ls -1d *_index/); do
+short=$(echo ${i} | sed 's/\_index.*//g' | sed 's/mf\_//g')
+bsub -q medium -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
+"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+-i ${parent}/${i} \
+-p 4 \
+--validateMappings \
+-l IU \
+-1 ${sample}_1.fq.gz \
+-2 ${sample}_2.fq.gz \
+-o ${name}_${short}.quant"
+done
+```
+
+## Reducing full data to only test set of transcripts
+
+```{bash}
+# Defining directories
+parent=/proprietary/proprietary/size_genome/data/genomes_human/
+cd $parent
+mkdir $parent/summary
+
+# Creating symbolic links for all quantitation files with new name that shows their size
+for i in $(ls -1d *.quant); do
+name=$(echo $i | sed 's/\.quant//g')
+ln -s $parent/$i/quant.sf $parent/summary/$name.sf
+done
+
+# Making directory for sf files of only the transcripts of interest
+cd summary
+mkdir only_target
+
+## Fasta containing those transcripts
+genes=/proprietary/proprietary/size_genome/data/genes/theten.fa
+
+# Subsampling quantitation files to only those transcripts
+for i in $(ls -1 *.sf); do
+cat $i | grep '\_test' > $parent/summary/only_target/sub_${i}
+done
+```
+
+## Creating total per million counts per mapping
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human/summary
+cd $parent
+
+touch tots_summ.tsv
+
+# Calculation for each quantitaion for the total per million reads
+for i in $(ls -1 *.sf); do
+tot=$(cat $i | sed '1d' | awk '{sum += $5/($3/1000)}END{print sum/1000000}')
+nam=$(echo $i | sed 's/\.sf//g')
+printf "${nam}\t${tot}\n" >> tots_summ.tsv
+done
+
+mv tots_summ.tsv ../../
+```
+
+* Moved all quantitation files to local drive
+
+## Summing human to gene level
+
+```{r}
+library(GenomicFeatures)
+library(tximport)
+library(data.table)
+library(dplyr)
+library(biomaRt)
+library(ggplot2)
+
+# Creating a transcript to gene level table
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+## Importing full length tpm
+orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig$Name<-gsub("\\..*","_test",orig$Name)
+small<-orig[,c("Name","TPM","NumReads")]
+colnames(small)<-c("gene","orig_tpm","orig_raw")
+
+## Restricting genes only to the ones that have transcripts represented in the test set
+goi<-tx2gene %>% filter(tx %in% gsub("_test","",unique(small$gene))) %>% dplyr::select(gid)
+txinterest<-tx2gene %>% filter(gid %in% goi[,1])
+
+## Saving as file
+#write.table(txinterest[,1],"/proprietary/tpm_genome_analysis/data/human_sample/txinterest.txt", sep = "\n", col.names = FALSE, row.names = FALSE, quote = FALSE)
+
+### reading in quant files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_gen/", "*sf",full.names=TRUE)
+gobj<-list()
+
+### Cleaning up names to make them consistent
+nam1<-gsub(".*\\/quant\\_gen\\/gen\\_","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+
+## Adding sample as column
+size1<-gsub("itox000633\\_hs\\_", "", nam2)
+size<-gsub("\\_.*", "", size1)
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=FALSE)
+  gobj[[i]][,4]<-round(as.numeric(gobj[[i]][,4]))
+  gobj[[i]][,6]<-as.numeric(size[i])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","tx","gl","egl","tpm","raw","size")
+
+## replacing ending of gene names
+gennam<-gsub("_test","",df$tx)
+gennam2<-gsub('\\..*','',gennam)
+df$tx<-gennam2
+
+## merging txinterest
+dat<-merge(df, txinterest, by = "tx")
+
+## loading the total list
+tots<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/tots_summ.tsv", header = FALSE, stringsAsFactors = FALSE)
+colnames(tots)<-c("iter","tot")
+
+# Get tots
+dat.f<-merge(dat, tots, by = "iter")
+
+# Calc tpm per gene
+## Summing data to gene level
+gendat<-dat.f %>% 
+  group_by(gid,iter,size,tot) %>% 
+  summarize(gene_tpm = sum(tpm))
+
+# Ordering genes
+gendat$gid<-factor(gendat$gid,levels=c("ENSG00000091704","ENSG00000168928","ENSG00000010438","ENSG00000198763","ENSG00000254772",
+                                   "ENSG00000142676","ENSG00000138161","ENSG00000140688","ENSG00000154556","ENSG00000198561"))
+
+## plotting - Not part of manuscript anymore
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig2b.jpeg", width = 2400, height = 1000, unit = "px")
+ggplot(gendat,
+       aes(x = tot, y = log10(gene_tpm), color = size))+
+  geom_jitter()+
+  ylim(c(-1,6))+
+  facet_wrap(. ~ gid, scales = "free") +
+  theme_classic()+
+  xlab("Summed per million value")+
+  ylab("log10(tpm) value")+
+  scale_color_gradient(name = "Subgenome\nsize(genes)", low="steelblue", high='firebrick2', guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme(strip.text = element_blank(),
+        axis.text = element_text(size = 40),
+        axis.title.y = element_text(margin=margin(t=0,b=0,r=20,l=0)),
+        axis.title = element_text(size = 50),
+        legend.text = element_text(size = 40),
+        legend.title = element_text(size = 50))
+dev.off()
+
+## Relaxed fig2b - Not part of manuscript anymore
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig2b_relaxed.jpeg", width = 2400, height = 1200, unit = "px")
+ggplot(gendat,
+       aes(x = tot, y = log10(gene_tpm), color = size))+
+  geom_jitter()+
+#  ylim(c(-1,6))+
+  facet_wrap(. ~ gid, scales = "free") +
+  theme_classic()+
+  xlab("Summed per million value")+
+  ylab("log10(tpm) value")+
+  scale_color_gradient(name = "Subgenome\nsize(genes)", low="steelblue", high='firebrick2', guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme(strip.text = element_blank(),
+        axis.text = element_text(size = 40),
+        axis.title.y = element_text(margin=margin(t=0,b=0,r=20,l=0)),
+        axis.title = element_text(size = 50),
+        legend.text = element_text(size = 40),
+        legend.title = element_text(size = 50))
+dev.off()
+
+# Bringing in full sample's gene level tpm
+orig.file<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/", "*sf",full.names=TRUE)
+orig.txi<-tximport(orig.file, type = "salmon", tx2gene=tx2gene, ignoreTxVersion = TRUE)
+
+## Taking out the tpm values
+orig.full<-orig.txi$abundance
+orig.dt<-setDT(as.data.frame(orig.full), keep.rownames = TRUE)[]
+colnames(orig.dt)<-c("gid","final.tpm")
+
+orig.raw<-orig.txi$counts
+orig.raw.dt<-setDT(as.data.frame(orig.raw), keep.rownames = TRUE)[]
+colnames(orig.raw.dt)<-c("gid","final.raw")
+
+## Merging these
+orig<-merge(orig.dt,orig.raw.dt, by = "gid")
+
+# Merging with gendat
+fdt<-merge(gendat,orig, by = "gid")
+fdt$logdiff<-log10(fdt$gene_tpm)-log10(fdt$final.tpm)
+
+# Calculating median and CI
+# Calculating error
+fdt_quant<- fdt %>% 
+  dplyr::group_by(gid,size) %>% 
+  dplyr::summarize(low=quantile(logdiff, 0.1, na.rm = T),
+            med=quantile(logdiff, 0.5, na.rm = T),
+            hi=quantile(logdiff, 0.9, na.rm = T))
+
+## Plotting - Not part of manuscript anymore
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig.S1a.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(fdt_quant,
+       aes(x = ((size/228200)*100), fill = gid, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med),lwd=3, alpha = 0.75) +
+  scale_fill_brewer(palette = "Set3", name="transcript") +
+  scale_color_brewer(palette = "Set3", name="transcript") +
+  ylab("Log10(tpm) difference + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  ylim(c(-0.75,1.8))+
+  xlim(c(0,100))+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+# Raw error calculation
+## Summing data to gene level
+gendat.raw<-dat.f %>% 
+  group_by(gid,iter,size,tot) %>% 
+  summarize(gene_raw = sum(raw))
+
+# Raw error
+fdt.raw<-merge(gendat.raw,orig, by = "gid")
+fdt.raw$lograwdiff<-log10(fdt.raw$gene_raw)-log10(fdt.raw$final.raw)
+
+fdt_raw_quant<- fdt.raw %>% 
+  dplyr::group_by(gid,size) %>% 
+  dplyr::summarize(low=quantile(lograwdiff, 0.1, na.rm = T),
+            med=quantile(lograwdiff, 0.5, na.rm = T),
+            hi=quantile(lograwdiff, 0.9, na.rm = T))
+
+## Raw plot - Not part of manuscript anymore
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig.S1b.jpeg", width = 2600, height = 1000, unit = 'px')
+ggplot(fdt_raw_quant,
+       aes(x = ((size/228200)*100), fill = gid, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med), lwd = 2, alpha = 0.75) +
+  scale_fill_brewer(palette = "Set3") +
+  scale_color_brewer(palette = "Set3") +
+#  ylim(c(-0.75,1.2))+
+  ylab("log10(raw reads) difference  + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+```
+
+# All gene transcripts removed
+## Selecting the transcripts belonging to all 10 genes
+
+```{r}
+library(dplyr)
+library(biomaRt)
+library(data.table)
+library(GenomicFeatures)
+
+# loading the 10 genes
+df<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+ten<-gsub("[.].*","",df$Name)
+
+## Finding genes that those transcripts belong to
+# Creating a transcript to gene level table
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+ten.genes<-tx2gene %>% filter(tx %in% ten) %>% dplyr::select(gid)
+ten.genes.transcripts<-tx2gene %>% filter(gid %in% ten.genes$gid) %>% dplyr::select(tx)
+
+## Writing all transcripts into a table
+write.table(ten.genes.transcripts$tx,"/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_tx.tsv", sep = '\t', row.names = FALSE, col.names = FALSE, quote = FALSE)
+
+# Reading in transcripts
+df<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_tx.tsv", sep = '\t', header = FALSE, stringsAsFactors = FALSE)
+
+# Defining species
+sp <-  "hsapiens"
+
+# Establishing ensembl connection
+gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                     dataset = paste0(sp,"_gene_ensembl"),
+                     host    = "www.ensembl.org")
+
+# Grabbing transcript sequence for all the transcripts
+tseq <- getSequence(id = df,
+                    type = "ensembl_transcript_id", 
+                    seqType = "cdna", 
+                    mart = gene_mart)
+
+# Adding "_test" designation
+tseq$ensembl_transcript_id<-gsub("$","_test",tseq$ensembl_transcript_id)
+
+# Writing to a fasta file
+exportFASTA(tseq, "/proprietary/tpm_genome_analysis/data/human_sample/thetengenes.fa")
+```
+
+## Subsampling human genome
+* First taking the sequences of the selected transcripts (from all 10 genes they represent) out of the ensembl transcriptome
+* Subsampling into 99 different sizes (from 1-99% of original size based on number of transcripts included)
+
+
+```{bash}
+mysub=/proprietary//proprietary/program/meme/libexec/meme-5.0.5/fasta-subsample
+myhomo=/proprietary/proprietary/data/sequencing/genomes/human/homo_sapiens.fa
+subhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_tengenes_homo_sapiens.fa
+myout=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
+genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+
+# Grabbing sequences to remove into a variable
+string=$(cat $genes | grep "^>" | sed 's/^>//g' | sed 's/\_test//g' | tr '\r\n' '\\|' | sed 's/^/\"/g' | sed 's/$/\"/g')
+
+# Removing them from linearized fasta and re-printing
+awk '{ if ((NR>1)&&($0~/^>/)) { printf("\n%s", $0); } else if (NR==1) { printf("%s", $0); } else { printf("\t%s", $0); } }' $myhomo | grep -v $string - | tr "\t" "\n" > ${subhomo}
+
+# Now re-subset, but on the genome that doesn't have those 10 genes
+for i in {001..099}; do
+for j in {001..100}; do
+k=$(echo 2282*$i | bc)
+rand=$(echo $RANDOM)
+bsub -q medium -app large -J "hs_${k}_${j}" -n 1,1 -M 8GB -R "span[hosts=1] rusage[mem=8GB]" -o "hs_${k}_${j}.err" -e "hs_${k}_${j}.err" "$mysub $subhomo $k -seed $rand | gzip > $myout/hs_${k}_${j}.fa.gz"
+done
+done
+```
+
+## Including test transcripts in all transcriptomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
+genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+
+cd $parent
+for i in $(ls -1); do
+    gzip -c $genes >> $parent/$i
+done
+```
+
+## Indexing 9900 genomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
+cd $parent
+
+# Indexing
+for i in $(ls -1); do
+short=$(echo ${i} | sed 's/\.fa\.gz//g')
+my_genome=${parent}/${i}
+my_out=${parent}/${short}_index
+my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
+"${my_salmon} index \
+-t ${my_genome} \
+-i ${my_out} \
+--type quasi \
+-k 31"
+done
+```
+
+## Quantitation of human HPA sample to all transcriptomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
+cd $parent
+sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+name=itox000633
+
+for i in $(ls -1d *_index/); do
+short=$(echo ${i} | sed 's/\_index.*//g' | sed 's/mf\_//g')
+bsub -q medium -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
+"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+-i ${parent}/${i} \
+-p 4 \
+--validateMappings \
+-l IU \
+-1 ${sample}_1.fq.gz \
+-2 ${sample}_2.fq.gz \
+-o ${name}_${short}.quant"
+done
+
+```
+
+## Moving quant files into summary folder
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes
+cd $parent
+
+mkdir summary
+
+for i in $(ls -1d *quant); do
+short=$(echo ${i} | sed 's/\.quant//g')
+ln -s ${parent}/${i}/quant.sf ${parent}/summary/${short}.sf
+done
+```
+
+## Reducing to test transcripts only
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes
+cd $parent
+
+# Making directory for sf files of only the genes of interest
+cd summary
+mkdir only_target
+
+## Fasta containing those genes
+genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+
+for i in $(ls -1 *.sf); do
+cat $i | grep '\_test' > $parent/summary/only_target/sub_${i}
+done
+
+```
+
+## Calculating total transcript per million value for each quantitaion
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/summary
+cd $parent
+
+touch tots_summ.tsv
+
+for i in $(ls -1 *.sf); do
+tot=$(cat $i | sed '1d' | awk '{sum += $5/($3/1000)}END{print sum/1000000}')
+nam=$(echo $i | sed 's/\.sf//g')
+printf "${nam}\t${tot}\n" >> tots_summ.tsv
+done
+
+mv tots_summ.tsv ../../
+```
+
+## Grabbing data for all transcripts from the 10 genes in initial quantitation
+
+```{r}
+library(dplyr)
+library(biomaRt)
+library(data.table)
+
+## Reading in transcripts
+tengenes<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes.tsv", sep = '\t', header=FALSE)
+
+## Loading human samples
+panc<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/quant.sf", header = TRUE, sep = '\t')
+panc$Name<-gsub("[.].*","",panc$Name)
+
+# Saving expression values
+thetengenes<-panc %>% filter(panc$Name %in% tengenes$V1)
+write.table(thetengenes,"/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+## Loading human test transcripts
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(dplyr)
+library(drc)
+library(GenomicFeatures)
+
+# Creating a list of files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_tengenes_target/", pattern = "*sf", full.names = TRUE)
+gobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*target\\/sub\\_","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+
+## Adding sample as column
+size1<-gsub("itox000633\\_hs\\_", "", nam2)
+size<-gsub("\\_.*", "", size1)
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=FALSE)
+  gobj[[i]][,4]<-as.numeric(round(gobj[[i]][,4]))
+  gobj[[i]][,6]<-as.numeric(size[i])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","gene","gl","egl","tpm","raw","size")
+df$gene<-gsub("_test","", df$gene)
+
+## Importing full length tpm
+orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig$Name<-gsub("\\..*","_test",orig$Name)
+small<-orig[,c("Name","TPM","NumReads")]
+colnames(small)<-c("gene","orig_tpm","orig_raw")
+
+# Removing transcripts with 0 tpm final value
+nozero<-small %>% filter(orig_tpm != 0)
+
+## Merging orig with new
+df_full<-merge(df,nozero,by="gene")
+df_full<-df_full %>% filter(tpm > 1)
+df_full$logreltpm<-log10(df_full$tpm)-log10(df_full$orig_tpm)
+df_full$logrelraw<-log10(df_full$raw)-log10(df_full$orig_raw)
+
+# Calculating error
+df_full_quant<- df_full %>% 
+  dplyr::group_by(gene,size) %>% 
+  dplyr::summarize(low=quantile(logreltpm, 0.1, na.rm = T),
+            med=quantile(logreltpm, 0.5, na.rm = T),
+            hi=quantile(logreltpm, 0.9, na.rm = T))
+
+# Adding the names of genes here
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+df_plot<-merge(df_full_quant,tx2gene, by.x = "gene",by.y = "tx")
+
+## Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_fig1a.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(df_plot,
+       aes(x = ((size/228200)*100), fill = gene, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med),lwd=2, alpha = 0.5) +
+  scale_fill_brewer(palette = "Set3", name="transcript") +
+  scale_color_brewer(palette = "Set3", name="transcript") +
+  ylab("Log10(tpm) difference + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  ylim(c(-0.5,4.5))+
+  xlim(c(0,100))+
+  geom_hline(yintercept = 0)+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+## Plotting with lines representing pre-clinical species
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_fig1a_pc.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(df_plot,
+       aes(x = ((size/228200)*100), fill = gene, color = gid))+
+#  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med),lwd=2, alpha = 0.75) +
+  scale_fill_brewer(palette = "Set3", name="transcript") +
+  scale_color_brewer(palette = "Set3", name="transcript") +
+  ylab("Log10(tpm) difference + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  ylim(c(-0.75,1.8))+
+  xlim(c(0,100))+
+  geom_hline(yintercept = 0)+
+  geom_vline(xintercept = c(18.7, 19.7, 26.1,68))+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+# Raw error
+df_raw_quant<- df_full %>% 
+  dplyr::group_by(gene,size) %>% 
+  dplyr::summarize(low=quantile(logrelraw, 0.1, na.rm = T),
+            med=quantile(logrelraw, 0.5, na.rm = T),
+            hi=quantile(logrelraw, 0.9, na.rm = T))
+#Merge with gene names
+df_raw_plot<-merge(df_raw_quant,tx2gene, by.x = "gene",by.y = "tx")
+
+## Raw plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_fig1b.jpeg", width = 2600, height = 1000, unit = 'px')
+ggplot(df_raw_plot,
+       aes(x = ((size/228200)*100), fill = gene, color = gid))+
+#  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med), lwd = 2, alpha = 0.75) +
+  scale_fill_brewer(palette = "Set3") +
+  scale_color_brewer(palette = "Set3") +
+#  ylim(c(-0.75,1.2))+
+  geom_hline(yintercept = 0)+
+  ylab("log10(raw reads) difference  + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+# Looking at these at the gene level
+
+## Summing small to gene level
+small_gene<-merge(small,tx2gene, by.x = "gene",by.y = "tx")
+small_gene$gene<-NULL
+
+small.gid<-small_gene %>% group_by(gid) %>% 
+  summarize(orig_tpm = sum(orig_tpm),
+            orig_raw = sum(orig_raw))
+
+## Summing experimental values to gene
+df_gene<-merge(df,tx2gene, by.x = "gene",by.y = "tx")
+
+df.gid<-df_gene %>% 
+  group_by(gid,iter) %>% 
+  summarize(tpm = sum(tpm),
+            raw = sum(raw),
+            size = median(size))
+
+## Merging the two/calculating
+df.full<-merge(df.gid, small.gid, by = "gid")
+df.full$logreltpm<-log10(df.full$tpm)-log10(df.full$orig_tpm)
+df.full$logrelraw<-log10(df.full$raw)-log10(df.full$orig_raw)
+
+# Calculating error
+df.quant<- df.full %>% 
+  dplyr::group_by(gid,size) %>% 
+  dplyr::summarize(low=quantile(logreltpm, 0.1, na.rm = T),
+            med=quantile(logreltpm, 0.5, na.rm = T),
+            hi=quantile(logreltpm, 0.9, na.rm = T))
+
+## Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig1a.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(df.quant,
+       aes(x = ((size/228200)*100), fill = gid, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med),lwd=2, alpha = 0.5) +
+  scale_fill_brewer(palette = "Set3", name="transcript") +
+  scale_color_brewer(palette = "Set3", name="transcript") +
+  ylab("Log10(tpm) difference + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  ylim(c(-0.5,4.5))+
+  xlim(c(0,100))+
+  geom_hline(yintercept = 0)+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+# Raw error - gene level
+df.raw<- df.full %>% 
+  dplyr::group_by(gid,size) %>% 
+  dplyr::summarize(low=quantile(logrelraw, 0.1, na.rm = T),
+            med=quantile(logrelraw, 0.5, na.rm = T),
+            hi=quantile(logrelraw, 0.9, na.rm = T))
+
+## Raw plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig1b.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(df.raw,
+       aes(x = ((size/228200)*100), fill = gid, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med), lwd = 2, alpha = 0.75) +
+  scale_fill_brewer(palette = "Set3") +
+  scale_color_brewer(palette = "Set3") +
+#  ylim(c(-0.75,1.2))+
+  geom_hline(yintercept = 0)+
+  ylab("log10(raw reads) difference  + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+
+#################################################################
+### Looking at tots
+## loading the total list
+tots<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/tots_summ.tsv", header = FALSE, stringsAsFactors = FALSE)
+colnames(tots)<-c("iter","tot")
+
+## Merging to df
+dat<-merge(df.full,tots,by = "iter")
+
+## Plotting
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig2a.jpeg", width = 2000, height = 1400, unit = "px")
+ggplot(dat,
+       aes(x = tot, y = log10(tpm), color = size))+
+  geom_jitter()+
+  ylim(c(-1,6))+
+  facet_wrap(. ~ gid, scales = "free") +
+  theme_classic()+
+  xlab("Summed per million value")+
+  ylab("log10(tpm) value")+
+  scale_color_gradient(name = "Subgenome\nsize(genes)", low="steelblue", high='firebrick2', guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme(strip.text = element_blank(),
+        axis.text = element_text(size = 40),
+        axis.title.y = element_text(margin=margin(t=0,b=0,r=20,l=0)),
+        axis.title = element_text(size = 50),
+        legend.text = element_text(size = 40),
+        legend.title = element_text(size = 50))
+dev.off()
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/relaxed_tpm_vs_tots.jpeg", width = 2400, height = 1200, unit = "px")
+ggplot(dat,
+       aes(x = tot, y = log10(tpm), color = size))+
+  geom_jitter()+
+#  ylim(c(0,6))+
+  facet_wrap(. ~ gid, scales = "free") +
+  theme_classic()+
+  xlab("Summed per million value")+
+  ylab("log10(tpm) value")+
+  scale_color_gradient(name = "Subgenome\nsize(genes)", low="steelblue", high='firebrick2', guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme(strip.text = element_blank(),
+        axis.text = element_text(size = 40),
+        axis.title.y = element_text(margin=margin(t=0,b=0,r=20,l=0)),
+        axis.title = element_text(size = 50),
+        legend.text = element_text(size = 40),
+        legend.title = element_text(size = 50))
+dev.off()
+```
+
+# Paralogs removed
+## Removing all paralogs to explore effect
+
+```{r}
+library(GenomicFeatures)
+library(tximport)
+library(RMariaDB)
+library(data.table)
+library(dplyr)
+library(RMySQL)
+
+# Creating a transcript to gene level table
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+## Importing full length tpm
+orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig$Name<-gsub("\\..*","_test",orig$Name)
+small<-orig[,c("Name","TPM","NumReads")]
+colnames(small)<-c("gene","orig_tpm","orig_raw")
+
+## Restricting genes only to the ones that have transcripts represented in the test set
+goi<-tx2gene %>% filter(tx %in% gsub("_test","",unique(small$gene))) %>% dplyr::select(gid)
+txinterest<-tx2gene %>% filter(gid %in% goi[,1])
+
+options(useFancyQuotes = FALSE)
+genes<-paste0(sQuote(unique(goi$gid)),collapse = ",")
+
+# Setup for marts
+listMarts()
+ensembl    <- useMart("ENSEMBL_MART_ENSEMBL", host = "www.ensembl.org")
+ensembl_ds <- as.data.table(listDatasets(ensembl))
+
+species <- c("hsapiens",
+             "mfascicularis",
+             "cfamiliaris",
+             "rnorvegicus",
+             "mmusculus")
+
+spids <- c(9606,9541,9615,10116,10090)
+names(spids) <- species
+
+# Grabbing paralogs
+hgid <- getBM(attributes = "ensembl_gene_id",
+              filters    = "with_hsapiens_paralog",
+              values     = TRUE,
+              mart       = human)$ensembl_gene_id
+
+para <- getBM(attributes = para.attr,
+              filters    = "ensembl_gene_id",
+              values     = hgid,
+              mart       = human)
+
+####################################################################
+### DISRUPTIVE CODE THAT ATTEMPTS TO SOLVE PARALOG VERSION ISSUE
+####################################################################
+human93 <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                   dataset = "hsapiens_gene_ensembl",
+                   host    = "jul2018.archive.ensembl.org")
+
+hgid93 <- getBM(attributes = "ensembl_gene_id",
+                filters    = "with_hsapiens_paralog",
+                values     = TRUE,
+                mart       = human93)$ensembl_gene_id
+
+para93 <- getBM(attributes = para.attr,
+                filters    = "ensembl_gene_id",
+                values     = hgid93,
+                mart       = human93)
+para93 <- as.data.table(para93)[ , species := "hsapiens"]
+setnames(para93, gsub("hsapiens_paralog_","", names(para93)))
+setnames(para93, gsub("paralogy_","", names(para93)))
+setnames(para93, gsub("orthology_","", names(para93)))
+setnames(para93,
+         c("ensembl_gene_id", "ensembl_gene", "associated_gene_name"),
+         c("ensembl_gene_id_human", "ensembl_gene_id_homolog", "gene_name"))
+para93[ , spid := 9606]
+para93[species=="hsapiens", homolog_class := "paralog"]
+para93[ , homolog_match_type := ifelse(grepl("P", ensembl_peptide), "protein", "transcript")]
+
+para93 <- para93[ , list(ensembl_gene_id_human,
+                         canonical_transcript_protein_id_human = canonical_transcript_protein,
+                         ensembl_gene_id_homolog,
+                         canonical_transcript_protein_id_homolog = ensembl_peptide,
+                         homolog_match_type,
+                         spid,
+                         homolog_class,
+                         type,
+                         subtype,
+                         perc_identity_homolog_to_human = perc_id,
+                         perc_identity_human_to_homolog = perc_id_r1,
+                         goc_score = NA,
+                         wga_coverage = NA,
+                         dn = NA,
+                         ds = NA,
+                         confidence = NA
+)]
+para93[ , source := 'ensembl93']
+para93[ , key := paste0(ensembl_gene_id_human,"|",ensembl_gene_id_homolog)]
+
+para94 <- as.data.table(dbGetQuery(zoomapdb,
+                                   "SELECT * FROM homolog WHERE homolog_class ='paralog';"))
+para94[ , source := 'ensembl94']
+para94[ , key := paste0(ensembl_gene_id_human,"|",ensembl_gene_id_homolog)]
+
+para <- rbindlist(list(para94, para93[!key %in% para94$key]))
+
+gene <- as.data.table(dbGetQuery(zoomapdb,
+                                 "SELECT * FROM gene WHERE spid = 9606;"))
+
+para <- para[ensembl_gene_id_human %in% gene$ensembl_gene_id &
+               ensembl_gene_id_homolog %in% gene$ensembl_gene_id]
+
+para <- para[ , list(ensembl_gene_id_human,
+                     canonical_transcript_protein_id_human,
+                     ensembl_gene_id_homolog,
+                     canonical_transcript_protein_id_homolog,
+                     homolog_match_type,
+                     spid,
+                     homolog_class,
+                     type,
+                     subtype,
+                     perc_identity_homolog_to_human,
+                     perc_identity_human_to_homolog,
+                     goc_score,
+                     wga_coverage,
+                     dn,
+                     ds,
+                     confidence)]
+
+##commented to prevent accidental running
+#dbSendQuery(zoomapdb, "DELETE FROM homolog WHERE homolog_class = 'paralog';")
+#dbWriteTable(conn  = zoomapdb,
+#             name  = "homolog",
+#             value = para,
+#             row.names = FALSE,
+#             overwrite = FALSE,
+#             append = TRUE)
+####################################################################
+####################################################################
+
+
+para <- as.data.table(para)[ , species := "hsapiens"]
+setnames(para, gsub("hsapiens_paralog_","", names(para)))
+setnames(ortholog, gsub("homolog_","", names(ortholog)))
+setnames(para, gsub("paralogy_","", names(para)))
+setnames(ortholog, gsub("orthology_","", names(ortholog)))
+setnames(para, gsub("orthology_","", names(para)))
+
+homolog <- rbindlist(list(ortholog, para), use.names = TRUE, fill = TRUE)
+homolog[species=="hsapiens", homolog_class := "paralog"]
+homolog[species!="hsapiens", homolog_class := "ortholog"]
+
+setnames(homolog,
+         c("ensembl_gene_id", "ensembl_gene", "associated_gene_name"),
+         c("ensembl_gene_id_human", "ensembl_gene_id_homolog", "gene_name"))
+homolog[ , spid := spids[match(homolog$species, names(spids))]]
+homolog[ , homolog_match_type := ifelse(grepl("P", ensembl_peptide), "protein", "transcript")]
+
+homolog <- homolog[ , list(ensembl_gene_id_human,
+                           canonical_transcript_protein_id_human = canonical_transcript_protein,
+                           ensembl_gene_id_homolog,
+                           canonical_transcript_protein_id_homolog = ensembl_peptide,
+                           homolog_match_type,
+                           spid,
+                           homolog_class,
+                           type,
+                           subtype,
+                           perc_identity_homolog_to_human = perc_id,
+                           perc_identity_human_to_homolog = perc_id_r1,
+                           goc_score,
+                           wga_coverage,
+                           dn,
+                           ds,
+                           confidence
+)]
+
+homolog2<-homolg[egid == genes, etid]
+
+# Select transcripts that are part of those genes
+
+para.transcripts<-tx2gene %>% filter(gid %in% homolog2$egid_human) %>% dplyr::select(tx)
+
+## Writing paralogs into a table
+write.table(para.transcripts$tx,"/proprietary/tpm_genome_analysis/data/human_sample/homologs.txt", sep = '\t', row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+## Subsampling from nospike
+
+```{bash}
+mysub=/proprietary//proprietary/program/meme/libexec/meme-5.0.5/fasta-subsample
+myhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_tengenes_homo_sapiens.fa
+subhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_nopara_tengenes_homo_sapiens.fa
+myout=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+genes=/proprietary/proprietary/size_genome/data/genes_human/homologs.txt
+
+# Grabbing sequences to remove into a variable
+string=$(cat $genes |  tr '\r\n' '\\|' | sed 's/^/\"/g' | sed 's/$/\"/g')
+
+# Removing them from linearized fasta and re-printing
+awk '{ if ((NR>1)&&($0~/^>/)) { printf("\n%s", $0); } else if (NR==1) { printf("%s", $0); } else { printf("\t%s", $0); } }' $myhomo | grep -v $string - | tr "\t" "\n" > ${subhomo}
+
+# Now re-subset, but on the genome that doesn't have those 10 genes or their paralogs
+for i in {001..099}; do
+for j in {001..100}; do
+k=$(echo 2282*$i | bc)
+rand=$(echo $RANDOM)
+bsub -q medium -app large -J "hs_${k}_${j}" -n 1,1 -M 8GB -R "span[hosts=1] rusage[mem=8GB]" -o "hs_${k}_${j}.err" -e "hs_${k}_${j}.err" "$mysub $subhomo $k -seed $rand | gzip > $myout/hs_${k}_${j}.fa.gz"
+done
+done
+```
+
+## Including genes in nopara transcriptomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+
+cd $parent
+for i in $(ls -1); do
+    gzip -c $genes >> $parent/$i
+done
+```
+
+## Indexing 9900 nopara genomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+cd $parent
+
+# Indexing
+for i in $(ls -1); do
+short=$(echo ${i} | sed 's/\.fa\.gz//g')
+my_genome=${parent}/${i}
+my_out=${parent}/${short}_index
+my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+bsub -q medium -app large -J "${short}" -n 4,4 -M 4GB -R "span[hosts=1] rusage[mem=4GB]" -o "indexing.err" -e "indexing.err" \
+"${my_salmon} index \
+-t ${my_genome} \
+-i ${my_out} \
+--type quasi \
+-k 31"
+done
+```
+
+## Submitting mapping to nopara transcriptomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+cd $parent
+sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+name=itox000633
+
+for i in $(ls -1d *_index/); do
+short=$(echo ${i} | sed 's/\_index.*//g')
+bsub -q medium -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
+"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+-i ${parent}/${i} \
+-p 4 \
+--validateMappings \
+-l IU \
+-1 ${sample}_1.fq.gz \
+-2 ${sample}_2.fq.gz \
+-o ${name}_${short}.quant"
+done
+```
+
+## Moving nopara and calculating tpmtot
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+cd $parent
+
+mkdir summary
+for i in $(ls -1d *.quant); do
+name=$(echo $i | sed 's/\.quant//g')
+ln -s $parent/$i/quant.sf $parent/summary/${name}.sf
+done
+
+# Making directory for sf files of only the genes of interest
+cd $parent/summary
+mkdir only_target
+
+for i in $(ls -1 *.sf); do
+cat $i | grep '\_test' > $parent/summary/only_target/sub_${i}
+done
+
+# Calculating tots
+cd $parent/summary
+
+touch tots_summ_nopara.tsv
+for i in $(ls -1 *.sf); do
+tot=$(cat $i | sed '1d' | awk '{sum += $5/($3/1000)}END{print sum/1000000}')
+nam=$(echo $i | sed 's/\.sf//g')
+printf "${nam}\t${tot}\n" >> tots_summ.tsv
+done
+
+cp tots_summ.tsv ../../tots_summ_nopara.tsv
+```
+
+## Exploring paralog influence
+
+```{r}
+library(GenomicFeatures)
+library(data.table)
+library(dplyr)
+library(biomaRt)
+library(ggplot2)
+library(ggjoy)
+library(hrbrthemes)
+
+# Creating a transcript to gene level table
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+## Importing full length tpm
+orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig$Name<-gsub("\\..*","_test",orig$Name)
+small<-orig[,c("Name","TPM","NumReads")]
+colnames(small)<-c("gene","orig_tpm","orig_raw")
+
+## Restricting genes only to the ones that have transcripts represented in the test set
+goi<-tx2gene %>% filter(tx %in% gsub("_test","",unique(small$gene))) %>% dplyr::select(gid)
+txinterest<-tx2gene %>% filter(gid %in% goi[,1])
+
+## Saving as file
+#write.table(txinterest[,1],"/proprietary/tpm_genome_analysis/data/human_sample/txinterest.txt", sep = "\n", col.names = FALSE, row.names = FALSE, quote = FALSE)
+
+### reading in quant files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_nopara_tengenes/", "*sf",full.names=TRUE)
+gobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*tengenes\\/sub\\_","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+
+## Adding sample as column
+size1<-gsub("itox000633\\_hs\\_", "", nam2)
+size<-gsub("\\_.*", "", size1)
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=FALSE)
+  gobj[[i]][,4]<-round(as.numeric(gobj[[i]][,4]))
+  gobj[[i]][,6]<-as.numeric(size[i])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","tx","gl","egl","tpm","raw","size")
+
+## replacing ending of gene names
+gennam<-gsub("_test","",df$tx)
+gennam2<-gsub('\\..*','',gennam)
+df$tx<-gennam2
+
+# Adding the names of genes here
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+df_plot<-merge(df_full_quant,tx2gene, by.x = "gene",by.y = "tx")
+
+# Looking at these at the gene level
+
+## Summing small to gene level
+small_gene<-merge(small,tx2gene, by.x = "gene",by.y = "tx")
+small_gene$gene<-NULL
+
+small.gid<-small_gene %>% group_by(gid) %>% 
+  summarize(orig_tpm = sum(orig_tpm),
+            orig_raw = sum(orig_raw))
+
+## Summing experimental values to gene
+df_gene<-merge(df,tx2gene, by.x = "tx",by.y = "tx")
+
+df.gid<-df_gene %>% 
+  group_by(gid,iter) %>% 
+  summarize(tpm = sum(tpm),
+            raw = sum(raw),
+            size = median(size))
+
+## Merging the two/calculating
+df.full<-merge(df.gid, small.gid, by = "gid")
+df.full$logreltpm<-log10(df.full$tpm)-log10(df.full$orig_tpm)
+df.full$logrelraw<-log10(df.full$raw)-log10(df.full$orig_raw)
+
+# Calculating error
+df.quant<- df.full %>% 
+  dplyr::group_by(gid,size) %>% 
+  dplyr::summarize(low=quantile(logreltpm, 0.1, na.rm = T),
+            med=quantile(logreltpm, 0.5, na.rm = T),
+            hi=quantile(logreltpm, 0.9, na.rm = T))
+
+## Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS2a.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(df.quant,
+       aes(x = ((size/228200)*100), fill = gid, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med),lwd=2, alpha = 0.5) +
+  scale_fill_brewer(palette = "Set3", name="transcript") +
+  scale_color_brewer(palette = "Set3", name="transcript") +
+  ylab("Log10(tpm) difference + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  ylim(c(-0.5,4.5))+
+  xlim(c(0,100))+
+  geom_hline(yintercept = 0)+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+# Raw error - gene level
+df.raw<- df.full %>% 
+  dplyr::group_by(gid,size) %>% 
+  dplyr::summarize(low=quantile(logrelraw, 0.1, na.rm = T),
+            med=quantile(logrelraw, 0.5, na.rm = T),
+            hi=quantile(logrelraw, 0.9, na.rm = T))
+
+## Raw plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS2b.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(df.raw,
+       aes(x = ((size/228200)*100), fill = gid, color = gid))+
+  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(y = med), lwd = 2, alpha = 0.75) +
+  scale_fill_brewer(palette = "Set3") +
+  scale_color_brewer(palette = "Set3") +
+#  ylim(c(-0.75,1.2))+
+  geom_hline(yintercept = 0)+
+  ylab("log10(raw reads) difference  + 80% CI")+
+  xlab("transcriptome size (% of full)")+
+#  facet_wrap(gene ~ .)+
+  theme_classic()+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text = element_text(size=60),
+        legend.position = "none")
+dev.off()
+
+# Loading tots
+tots<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/tots_summ_nopara.tsv", header = FALSE, stringsAsFactors = FALSE)
+colnames(tots)<-c("iter","tot")
+
+# Get tots
+dat.f<-merge(dat, tots, by = "iter")
+
+## Calc tpm per gene
+## Summing data to gene level
+gendat<-dat.f %>% 
+  group_by(gid,iter,size,tot) %>% 
+  summarize(gene_tpm = sum(tpm))
+
+# Ordering genes
+gendat$gid<-factor(gendat$gid,levels=c(unique(gendat$gid)))
+
+## Adding factor to gid
+joy <- gendat %>%  group_by(gid) %>%
+       mutate(m=mean(gene_tpm)) %>%
+       arrange(m) %>%
+       ungroup() %>%
+       mutate(gid=factor(gid, unique(gid)))
+
+# Fig s3b
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS3b.jpeg",width = 2000, height = 1400, unit = "px")
+ggplot(joy,
+       aes(x=log10(gene_tpm), y=gid, height = ..density.., fill = gid))+
+  geom_joy(scale=4, lwd = 0.8)+
+  scale_x_continuous(limits=c(1,6))+
+  scale_fill_manual(values = c(rep("indianred2",3),rep("lightsteelblue",5),"indianred2","lightsteelblue"))+
+  theme_ipsum(grid=F)+
+  xlab("Log10(tpm)")+
+  theme(axis.title.y=element_blank(),
+        axis.text.y = element_text(size = 35),
+        axis.text.x = element_text(size = 50),
+        axis.ticks.y=element_blank(),
+        strip.text.y = element_text(angle = 180, hjust = 1),
+        legend.position = "none")
+graphics.off()
+```
+
+##  TMM on TPM in Naqvi dataset
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(RMariaDB)
+library(data.table)
+library(ggplot2)
+library(RMariaDB)
+library(NOISeq)
+
+listMarts()
+ensembl    <- useMart("ENSEMBL_MART_ENSEMBL", host = "www.ensembl.org")
+ensembl_ds <- as.data.table(listDatasets(ensembl))
+
+species <- c("hsapiens",
+             "mfascicularis",
+             "cfamiliaris",
+             "rnorvegicus",
+             "mmusculus")
+
+spids <- c(9606,9541,9615,10116,10090)
+names(spids) <- species
+
+
+attr.list <- list()
+for(sp in species){
+  mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                  dataset = paste0(sp,"_gene_ensembl"),
+                  host    = "www.ensembl.org")#"useast.ensembl.org")
+  
+  a <- as.data.table(listAttributes(mart))[ , species := sp]
+  attr.list[[sp]] <- a
+}
+attr <- rbindlist(attr.list)
+
+human <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                 dataset = "hsapiens_gene_ensembl",
+                 host    = "useast.ensembl.org")
+
+human.attr <- as.data.table(listAttributes(human))
+human.filt <- as.data.table(listFilters(human))
+
+preclinical.species <- c("mfascicularis", "cfamiliaris", "rnorvegicus", "mmusculus")
+
+get_orthologs <- function(sp){
+  ortho.attr <- c("ensembl_gene_id", human.attr[grepl(sp, name), name])
+  ortho <- getBM(attributes = ortho.attr,
+                 filters    = paste0("with_",sp,"_homolog"),
+                 values     = TRUE,
+                 mart       = human)
+  ortho <- unique(as.data.table(ortho)[ , species := sp])
+  setnames(ortho, gsub(paste0(sp,"_"), "", names(ortho)))
+  return(ortho)
+}
+
+ortholog.list <- lapply(preclinical.species, get_orthologs)
+ortholog <- rbindlist(ortholog.list)
+
+# Loading Naqvi data
+cyno<-fread("/proprietary/zoomap/data/naqvi/cyno.salmon.tximport.tpm.txt")
+dog<-fread("/proprietary/zoomap/data/naqvi/dog.salmon.tximport.tpm.txt")
+mouse<-fread("/proprietary/zoomap/data/naqvi/mouse.salmon.tximport.tpm.txt")
+rat<-fread("/proprietary/zoomap/data/naqvi/rat.salmon.tximport.tpm.txt")
+
+## Converting data to long format
+cyno.m<-melt(cyno)
+dog.m<-melt(dog)
+rat.m<-melt(rat)
+mouse.m<-melt(mouse)
+
+## Naming columns
+colnames(cyno.m) <- c("egid_homolog","snm","tpm")
+colnames(dog.m) <- c("egid_homolog","snm","tpm")
+colnames(rat.m) <- c("egid_homolog","snm","tpm")
+colnames(mouse.m) <- c("egid_homolog","snm","tpm")
+
+## Adding species name
+cyno.m$spnm<-"cyno"
+dog.m$spnm<-"dog"
+rat.m$spnm<-"rat"
+mouse.m$spnm<-"mouse"
+
+## Merging to human homolog
+cyno.mm <- merge(cyno.m, con.hom, by = "egid_homolog")
+dog.mm <- merge(dog.m, con.hom, by = "egid_homolog")
+rat.mm <- merge(rat.m, con.hom, by = "egid_homolog")
+mouse.mm <- merge(mouse.m, con.hom, by = "egid_homolog")
+
+## Rbind
+dat <- rbind(cyno.mm, dog.mm, rat.mm, mouse.mm)
+
+## Adding organ systems
+n1<-gsub('.*ale_','',dat$snm)
+n2<-gsub('_L.*','',n1)
+
+dat$onm<-n2
+
+## Changing colnames
+colnames(dat)<-gsub("_human","", colnames(dat))
+
+```
+
+# adding human data (run with above)
+```{bash}
+
+## Downloaded fastq files for HPA from https://www.ebi.ac.uk/ena/data/view/PRJEB6971
+## Put them through salmon pipeline as described above
+for i in $(ls -1d *_index/); do
+short=$(echo ${i} | sed 's/\_index.*//g')
+bsub -q express -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
+"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+-i ${parent}/${i} \
+-p 4 \
+--validateMappings \
+-l IU \
+-1 ${sample}_1.fq.gz \
+-2 ${sample}_2.fq.gz \
+-o ${name}_${short}.quant"
+done
+
+## loaded data
+library(GenomicFeatures)
+library(tximport)
+library(data.table)
+library(dplyr)
+library(biomaRt)
+library(ggplot2)
+
+# Creating a transcript to gene level table
+homodb<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+
+k<-keys(homodb,keytype="TXNAME")
+tx2gene<-AnnotationDbi::select(homodb,k,"GENEID","TXNAME")
+
+head(tx2gene)
+colnames(tx2gene)<-c("tx","gid")
+
+# Loaded them as hum.dat
+###################################
+```
+
+# Run with above
+```{r}
+## Reducing to only orthologs
+hum.dat2<-hum.dat[egid %in% unique(dat$egid)]
+hum.dat2$onm<-gsub("\\ Gland","",hum.dat2$onm)
+hum.dat2$onm<-gsub("\\ Tissue","",hum.dat2$onm)
+hum.dat2$onm<-gsub("Skeletal\\ ","",hum.dat2$onm)
+
+# # Taking median of human
+# hum.med<-hum.dat2[, .(med_tpm=median(tpm)), by = .(onm,egid)]
+# 
+# # Taking median of data
+# dat.med<-dat[,.(med_pctpm=median(tpm)), by = .(onm,egid_human,egid_homolog,spnm)]
+# 
+# # Merging with naqvi
+# df<-merge(dat.med, hum.med, by = c("egid_human","onm"))
+
+## Merging for tmm
+dat2<-dat[,.(egid, onm, snm, spnm, tpm)]
+colnames(hum.dat2)<-c("snm","spnm","onm","egid","tpm")
+
+all.dat<-rbind(dat2, hum.dat2)
+
+## Keeping only columns for conversion
+sall<-all.dat[,.(egid, snm, tpm)]
+
+## removing values below 1 tpm
+sall<-sall[log10(tpm) > 0]
+
+# TMM normalization
+## Casting mhomdf into wide format
+homdf<-dcast(sall, formula = egid ~ snm)
+
+## Turning into matrix with rownames as genes
+hommat<-as.matrix(homdf[,-1])
+rownames(hommat)<-homdf$egid
+hommat<-na.omit(hommat)
+
+## Normalizing with tmm
+### Find largest colsum
+head(order(colSums(hommat, na.rm=TRUE), decreasing = TRUE), n=1)
+
+normhomdf<-tmm(hommat, 
+               long = 1000, 
+               lc = 0, 
+               k = 0, 
+               refColumn = head(order(colSums(hommat, na.rm=TRUE), decreasing = TRUE), n=1),
+               logratioTrim = 0.3, 
+               sumTrim = 0.05, 
+               doWeighting = TRUE, 
+               Acutoff = -1e+10)
+
+## Melt this back to sid column
+mnorm<-melt(normhomdf)
+colnames(mnorm)<-c("egid","snm","tmm")
+
+## Merge back to hommerhom
+meta<-unique(all.dat[,.(snm,spnm,onm)])
+norm.dat<-merge(meta, mnorm, by = c("snm"))
+
+# # Visualize
+# ggplot(norm.dat,
+#        aes(x = reltot, y = log10(tmm)))+
+#   geom_point()+
+#   geom_smooth(method="lm")
+
+## Extract human median values per organ per gene
+humdat<-norm.dat[spnm == "human", .(med_tmm = median(tmm)), by = .(egid, onm)]
+
+## Merge with rest
+tot.dat<-merge(norm.dat, humdat, by = c("onm", "egid"))
+
+# Controling for low tmm
+tot.dat$tmm<-pmax(tot.dat$tmm, 1)
+tot.dat$med_tmm<-pmax(tot.dat$med_tmm, 1)
+
+tot.dat<-tot.dat[log10(tmm) > 0 & log10(med_tmm) > 0]
+
+tot.dat$tmm_diff<-log10(tot.dat$tmm)-log10(tot.dat$med_tmm)
+
+# Filter infinite or na
+subw<-is.finite(tot.dat[,(tmm_diff)]) & !is.na(tot.dat[,(tmm_diff)])
+
+# Summary
+tot.dat[subw,median(tmm_diff), by = (spnm)]
+
+## Visualize
+# jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS13.jpeg", width = 2600, height = 1000, unit = "px")
+ggplot(tot.dat[subw,],
+       aes(x = spnm, y = tmm_diff, fill = spnm))+
+  geom_violin(draw_quantiles = 0.5)+
+  theme_classic()+
+  geom_hline(yintercept = 0)+
+  ylab("Log difference in corrected TPM values")+
+  xlab("")
+# graphics.off()
+
+## Defining geom_split_violin
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
+                           draw_group = function(self, data, ..., draw_quantiles = NULL) {
+  data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+  grp <- data[1, "group"]
+  newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+  newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+  newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"])
+
+  if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) {
+    stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <=
+      1))
+    quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+    aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+    aesthetics$alpha <- rep(1, nrow(quantiles))
+    both <- cbind(quantiles, aesthetics)
+    quantile_grob <- GeomPath$draw_panel(both, ...)
+    ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+  }
+  else {
+    ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+  }
+})
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) {
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+## Let's plot some differences
+add.tpm<-merge(all.dat,tot.dat, by = c("egid","onm","snm","spnm"))
+
+## Extract human median values per organ per gene
+humdat.tpm<-add.tpm[spnm == "human", .(med_tpm = median(tpm)), by = .(egid, onm)]
+
+## Merge with rest
+tot.dat.tpm<-merge(add.tpm, humdat.tpm, by = c("onm", "egid"))
+
+## Removing 0s
+## Establishing logs
+tot.dat.tpm$tpm<-pmax(tot.dat.tpm$tpm,1)
+tot.dat.tpm$med_tpm<-pmax(tot.dat.tpm$med_tpm,1)
+
+## Removing 0s
+tot.dat.hi<-tot.dat.tpm[log10(tpm)>0 & log10(med_tpm)>0]
+
+## Adding difference
+tot.dat.hi$tpm_diff<-log10(tot.dat.hi$tpm)-log10(tot.dat.hi$med_tpm)
+
+tot.dat.hi[,median(tmm_diff), by = (spnm)]
+
+## Shortening it to melt
+stot<-tot.dat.hi[,.(egid,snm,spnm,tmm_diff,tpm_diff)]
+
+mstot<-melt(stot, id.vars = c("egid","snm","spnm"),
+            variable.name = "method")
+
+mstot$method<-factor(mstot$method, levels = c("tpm_diff","tmm_diff"))
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS13.jpeg", width = 2600, height = 2000, unit = "px")
+ggplot(mstot[!spnm == "human"],
+       aes(x = spnm, y = value, fill = method))+
+  geom_split_violin()+
+  theme_classic()+
+  scale_fill_discrete(name = "",
+                      breaks = c("tpm_diff","tmm_diff"),
+                      labels = c("before","after"))+
+  geom_hline(yintercept = 0)+
+  ylab("Log difference before and after correction")+
+  xlab("")+
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 80),
+        axis.text = element_text(size = 80),
+        axis.title = element_text(size = 90))
+graphics.off()
+```
+
+## Housekeeeping genes analysis with Naqvi data
+
+```{r}
+rm (list = ls ())
+# setting the working directory
+#setwd ("/Users/arats/Desktop/Projects/Zoomap_Correction Factor/HouseKeeping_genes/") 
+
+library (dplyr)
+library (ggplot2)
+library (ggrepel)
+library (tidyverse)
+
+## Defining geom_split_violin
+GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
+                           draw_group = function(self, data, ..., draw_quantiles = NULL) {
+                             data <- transform(data, xminv = x - violinwidth * (x - xmin), xmaxv = x + violinwidth * (xmax - x))
+                             grp <- data[1, "group"]
+                             newdata <- plyr::arrange(transform(data, x = if (grp %% 2 == 1) xminv else xmaxv), if (grp %% 2 == 1) y else -y)
+                             newdata <- rbind(newdata[1, ], newdata, newdata[nrow(newdata), ], newdata[1, ])
+                             newdata[c(1, nrow(newdata) - 1, nrow(newdata)), "x"] <- round(newdata[1, "x"]) 
+                             
+                             if (length(draw_quantiles) > 0 & !scales::zero_range(range(data$y))) { 
+                               stopifnot(all(draw_quantiles >= 0), all(draw_quantiles <= 1))
+                               quantiles <- ggplot2:::create_quantile_segment_frame(data, draw_quantiles)
+                               aesthetics <- data[rep(1, nrow(quantiles)), setdiff(names(data), c("x", "y")), drop = FALSE]
+                               aesthetics$alpha <- rep(1, nrow(quantiles))
+                               both <- cbind(quantiles, aesthetics)
+                               quantile_grob <- GeomPath$draw_panel(both, ...)
+                               ggplot2:::ggname("geom_split_violin", grid::grobTree(GeomPolygon$draw_panel(newdata, ...), quantile_grob))
+                             }
+                             else { 
+                               ggplot2:::ggname("geom_split_violin", GeomPolygon$draw_panel(newdata, ...))
+                             }
+                           }
+)
+
+geom_split_violin <- function(mapping = NULL, data = NULL, stat = "ydensity", position = "identity", ..., 
+                              draw_quantiles = NULL, trim = TRUE, scale = "area", na.rm = FALSE, 
+                              show.legend = NA, inherit.aes = TRUE) { 
+  layer(data = data, mapping = mapping, stat = stat, geom = GeomSplitViolin, 
+        position = position, show.legend = show.legend, inherit.aes = inherit.aes, 
+        params = list(trim = trim, scale = scale, draw_quantiles = draw_quantiles, na.rm = na.rm, ...))
+}
+
+double_vioplots_with_medians_species = function (mydata, coi) {
+  median.points.data = c ()
+  mylist = unique (mydata[[coi]])
+  n = length (mylist)
+  for (i in 1:n) {
+    the.info = data.frame (x = i - 0.07, 
+                           y = round (median (mydata$value[which (mydata[[coi]] == mylist[i] & 
+                                                                    mydata$method == "before")]), 3), 
+                           ptnm = "p"
+    )
+    median.points.data = rbind (median.points.data, the.info)
+    
+    the.info = data.frame (x = i + 0.07, 
+                           y = round (median (mydata$value[which (mydata[[coi]] == mylist[i] & 
+                                                                    mydata$method == "after")]), 3), 
+                           ptnm = "m"
+    )
+    median.points.data = rbind (median.points.data, the.info)
+    
+  }
+  
+  ggplot(mydata,
+         aes(x = factor (get (coi), level = c ('cyno', 'dog', 'mouse', 'rat', 'human')), 
+             y = value, fill = factor (method)))+
+    geom_split_violin(show.legend = F)+
+    theme_classic()+
+    geom_point (data = median.points.data, aes (x, y, fill = NA), #shape = factor (ptnm)), 
+                show.legend = F) + 
+    geom_label_repel (data = median.points.data, aes (x, y, fill = NA, label = y), 
+                      box.padding   = 0.35, 
+                      point.padding = 0.6) + 
+    geom_abline (slope = 0, intercept = 0, linetype = 2) + 
+    xlab("")+ ylab ("")+
+    labs (title = paste0 ("1904 Housekeeping Genes")) + 
+    scale_fill_discrete (name = "", labels = c ("before", "after"))
+  
+}
+
+double_vioplots_with_medians_tissues = function (mydata, coi) {
+  median.points.data = c ()
+  mylist = unique (mydata[[coi]])
+  n = length (mylist)
+  for (i in 1:n) {
+    the.info = data.frame (x = i - 0.07, 
+                           y = round (median (mydata$value[which (mydata[[coi]] == mylist[i] & 
+                                                                    mydata$method == "before")]), 3), 
+                           ptnm = "p"
+    )
+    median.points.data = rbind (median.points.data, the.info)
+    
+    the.info = data.frame (x = i + 0.07, 
+                           y = round (median (mydata$value[which (mydata[[coi]] == mylist[i] & 
+                                                                    mydata$method == "after")]), 3), 
+                           ptnm = "m"
+    )
+    median.points.data = rbind (median.points.data, the.info)
+    
+  }
+  
+  ggplot(mydata, aes(x = get (coi), y = value, fill = factor (method)))+
+    geom_split_violin(show.legend = F)+
+    theme_classic()+
+    geom_point (data = median.points.data, aes (x, y, fill = NA), show.legend = F) + 
+    geom_label_repel (data = median.points.data, aes (x, y, fill = NA, label = y), 
+                      box.padding   = 0.35, 
+                      point.padding = 0.6) + 
+    geom_abline (slope = 0, intercept = 0, linetype = 2) + 
+    xlab("")+ ylab ("")+
+    labs (title = paste0 ("1904 Housekeeping Genes (", mydata$spnm[1], ")")) +
+    scale_fill_discrete (name = "", labels = c ("before", "after"))
+  
+}
+
+#################################################
+
+my.data = readRDS ("./naqvi_hkgenes.rds")
+
+n.entries = nrow (my.data)
+the.data = data.frame (onm = my.data$onm, 
+                       egid = my.data$egid, 
+                       spnm = my.data$spnm, 
+                       value = c (my.data$tpm_diff, my.data$tmm_diff), 
+                       method = c (rep ("before", n.entries), rep ("after", n.entries))
+)
+
+double_vioplots_with_medians_species (mydata = the.data, coi = 'spnm')
+
+#double_vioplots_with_medians (mydata = the.data %>% filter (spnm == 'human'), coi = 'onm')
+double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'cyno'), coi = 'onm')
+double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'dog'), coi = 'onm')
+double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'rat'), coi = 'onm')
+double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'mouse'), coi = 'onm')
+
+dev.off ()
+```
+
+# Historic ensembl annotations
+
+## Getting historic transcriptomees
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_historic/fasta
+cd $parent
+
+wget ftp://ftp.ensembl.org/pub/release-43/homo_sapiens_43_36e/data/fasta/cdna/Homo_sapiens.NCBI36.43.cdna.all.fa.gz -O hsapiens.43.cdna.all.fa.gz
+
+wget ftp://ftp.ensembl.org/pub/release-44/homo_sapiens_44_36f/data/fasta/cdna/Homo_sapiens.NCBI36.44.cdna.all.fa.gz -O hsapiens.44.cdna.all.fa.gz
+
+wget ftp://ftp.ensembl.org/pub/release-46/homo_sapiens_46_36h/data/fasta/cdna/Homo_sapiens.NCBI36.46.cdna.all.fa.gz -O hsapiens.46.cdna.all.fa.gz
+
+for i in {47..97}; do
+wget ftp://ftp.ensembl.org/pub/release-"${i}"/fasta/homo_sapiens/cdna/Homo_sapiens.*.cdna.all.fa.gz -O hsapiens."${i}".cdna.all.fa.gz
+done
+
+for i in $(ls -1 *fa.gz); do
+zcat $i | grep -c "^>"
+done
+```
+
+## GTF for those files
+
+```{bash}
+parent_gtf=/proprietary/proprietary/size_genome/data/genomes_historic/gtf
+cd $parent_gtf
+
+wget ftp://ftp.ensembl.org/pub/release-43/homo_sapiens_43_36e/data/gtf/Homo_sapiens.NCBI36.43.gtf.gz -O hsapiens.43.gtf.gz
+
+wget ftp://ftp.ensembl.org/pub/release-44/homo_sapiens_44_36f/data/gtf/Homo_sapiens.NCBI36.44.gtf.gz -O hsapiens.44.gtf.gz
+
+wget ftp://ftp.ensembl.org/pub/release-46/homo_sapiens_46_36h/data/gtf/Homo_sapiens.NCBI36.46.gtf.gz -O hsapiens.46.gtf.gz
+
+wget ftp://ftp.ensembl.org/pub/release-47/gtf/Homo_sapiens.NCBI36.47.gtf.gz -O hsapiens.47.gtf.gz
+
+for i in {48..97}; do
+wget ftp://ftp.ensembl.org/pub/release-"${i}"/gtf/homo_sapiens/*."${i}".gtf.gz -O hsapiens."${i}".gtf.gz
+done
+```
+
+## Indexing historic genomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_historic/fasta/
+cd $parent
+
+# Indexing
+for i in $(ls -1); do
+short=$(echo ${i} | sed 's/\.fa\.gz//g')
+my_genome=${parent}/${i}
+my_out=${parent}/${short}_index
+my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+bsub -q express -app large -J "${short}" -n 4,4 -M 4GB -R "span[hosts=1] rusage[mem=4GB]" -o "indexing.err" -e "indexing.err" \
+"${my_salmon} index \
+-t ${my_genome} \
+-i ${my_out} \
+--type quasi \
+-k 31"
+done
+```
+
+## Mapping to historic genomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_historic/fasta/
+cd $parent
+sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+name=itox000633
+
+for i in $(ls -1d *_index/); do
+short=$(echo ${i} | sed 's/\_index.*//g')
+bsub -q express -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
+"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+-i ${parent}/${i} \
+-p 4 \
+--validateMappings \
+-l IU \
+-1 ${sample}_1.fq.gz \
+-2 ${sample}_2.fq.gz \
+-o ${name}_${short}.quant"
+done
+
+# Moving to summary folder
+mkdir summary
+for i in $(ls -1d *.quant); do
+name=$(echo $i | sed 's/\.cdna\.all\.quant//g')
+ln -s $parent/$i/quant.sf $parent/summary/${name}.sf
+done
+```
+
+## Historic view
+
+```{r}
+library(GenomicFeatures)
+library(rlist)
+library(tximport)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(hrbrthemes)
+library(ggjoy)
+
+gtf.files<-list.files(path="/proprietary/tpm_genome_analysis/data/human_sample/historic/gtf/", pattern = "*gz", full.names = TRUE)
+
+tx2gene<-list()
+for(i in 1:length(gtf.files)){
+  # Creating a transcript to gene level table for each genome
+  homodb<-makeTxDbFromGFF(gtf.files[i],format="gtf")
+  homo.k<-keys(homodb,keytype="TXNAME")
+  temp<-AnnotationDbi::select(homodb,homo.k,"GENEID","TXNAME")
+  tx2gene[i]<-list(temp)
+}
+
+gid<-list()
+# Get only gene names
+for(i in 1: length(tx2gene)){
+  gid[i]<-list(unique(tx2gene[[i]][,2]))
+}
+
+# Finding common genes across years
+shared<-Reduce(intersect, gid)
+
+tx.short<-list()
+# Retaining shared
+for(i in 1:length(tx2gene)){
+  tx.short[i]<-list(tx2gene[[i]] %>% filter(GENEID %in% shared))
+}
+
+# Creating a list of files
+hfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/historic/fasta/", pattern = "*sf", full.names = TRUE)
+hobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*fasta\\/itox000633\\_hsapiens\\.","",hfiles)
+nam2<-gsub(".sf","",nam1)
+
+hobj[[1]]<-tximport(hfiles[[1]], type = "salmon", tx2gene = tx.short[[1]])
+
+### Reading that list in
+for(i in 1:length(hfiles)){
+  hobj[[i]] <- tximport(hfiles[[i]], type = "salmon", tx2gene = tx.short[[i]], ignoreTxVersion = TRUE)
+}
+
+# Taking out only the tpm values
+tpm<-as.data.frame(shared[order(shared)])
+colnames(tpm)<-"gid"
+
+# Merging
+for(i in 1:length(hobj)){
+  tpm<-merge(tpm,setDT(as.data.frame(hobj[[i]]),keep.rownames = TRUE)[,c("rn","abundance")], by.x="gid",by.y="rn")
+}
+tpm.nam<-c("gid",nam2)
+colnames(tpm)<-tpm.nam
+
+# Subtracting final
+tpm2<-cbind(gid=tpm[,1],
+            log10(tpm[,-1])-log10(tpm[,"97"]))
+
+size<-c()
+for(i in 1:54){size[i]<-(log10(length(tx.short[[i]][,2])))}
+size2<-cbind(rel=c(43:44,46:97),size)
+
+# Melt
+mtpm<-na.omit(melt(tpm2[,], id.vars = c("gid")))
+colnames(mtpm)<-c("gid","rel","tpm")
+mtpm<-merge(mtpm,size2, by = "rel")
+mtpm2<-mtpm[is.finite(mtpm$tpm),]
+
+# Plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/shared.tpm.jpeg",width = 1200, height = 1600, unit = "px")
+ggplot(mtpm2,
+       aes(x=tpm, y=rel, height = ..density.., fill = size))+
+  geom_joy(scale=5)+
+  scale_x_continuous(limits=c(-0.25,0.25))+
+  theme_ipsum(grid=F)+
+  xlab("TPM value for gene relative to latest release")+
+  theme(axis.title.y=element_blank(),
+        axis.ticks.y=element_blank(),
+        strip.text.y = element_text(angle = 180, hjust = 1))
+graphics.off()
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.tpm.jpeg",width = 1200, height = 1600, unit = "px")
+ggplot(mtpm2,
+       aes(x=rel, y=tpm, color = gid))+
+  geom_line(aes(group=gid), alpha = 0.3)+
+  theme_classic()+
+  theme(legend.position = "none",
+    axis.title.y=element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.text.x = element_text(angle = 270, vjust = .2))
+graphics.off()
+
+### Ribbon
+
+# Calculating error
+quant.tpm<- mtpm2 %>% 
+  dplyr::group_by(rel) %>% 
+  dplyr::summarize(low=quantile(tpm, 0.1, na.rm = T),
+            med=quantile(tpm, 0.5, na.rm = T),
+            hi=quantile(tpm, 0.9, na.rm = T))
+
+## Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.tpm.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(quant.tpm,
+       aes(x = rel, color = "firebrick2", fill = "firebrick2"))+
+  geom_ribbon(aes(group =1, ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(group = 1, y = med),lwd=2, alpha = 0.75) +
+  ylab("Log10(tpm) difference + 80% CI")+
+  xlab("Ensembl release")+
+  geom_hline(yintercept = 0)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text.x = element_text(angle = 270, size=40),
+        axis.text.y = element_text(size = 40),
+        legend.position = "none")
+dev.off()
+
+# Re-do with reads mapped to gene
+# Taking out only the tpm values
+raw<-as.data.frame(shared[order(shared)])
+colnames(raw)<-"gid"
+
+# Merging
+for(i in 1:length(hobj)){
+  raw<-merge(raw,setDT(as.data.frame(hobj[[i]]),keep.rownames = TRUE)[,c("rn","counts")], by.x="gid",by.y="rn")
+}
+raw.nam<-c("gid",nam2)
+colnames(raw)<-raw.nam
+
+# Subtracting final
+raw2<-cbind(gid=raw[,1],
+            log10(raw[,-1])-log10(raw[,"97"]))
+
+size<-c()
+
+# Adding genome size
+for(i in 1:54){size[i]<-(log10(length(tx.short[[i]][,2])))}
+size2<-cbind(rel=c(43:44,46:97),size)
+
+# Melt
+mraw<-na.omit(melt(raw2[,], id.vars = c("gid")))
+colnames(mraw)<-c("gid","rel","raw")
+mraw<-merge(mraw,size2, by = "rel")
+mraw2<-mraw[is.finite(mraw$raw),]
+
+# Calculating error
+quant.raw<- mraw2 %>% 
+  dplyr::group_by(rel) %>% 
+  dplyr::summarize(low=quantile(raw, 0.1, na.rm = T),
+            med=quantile(raw, 0.5, na.rm = T),
+            hi=quantile(raw, 0.9, na.rm = T))
+
+## Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.raw.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(quant.raw,
+       aes(x = rel, color = "firebrick2", fill = "firebrick2"))+
+  geom_ribbon(aes(group =1, ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(group = 1, y = med),lwd=2, alpha = 0.75) +
+  ylab("Log10(raw) difference + 80% CI")+
+  xlab("Ensembl release")+
+  geom_hline(yintercept = 0)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text.x = element_text(angle = 270, size=40),
+        axis.text.y = element_text(size = 40),
+        legend.position = "none")
+dev.off()
+
+# Re-do with length of gene
+# Taking out only the length values
+length<-as.data.frame(shared[order(shared)])
+colnames(length)<-"gid"
+
+# Merging
+for(i in 1:length(hobj)){
+  length<-merge(length,setDT(as.data.frame(hobj[[i]]),keep.rownames = TRUE)[,c("rn","length")], by.x="gid",by.y="rn")
+}
+length.nam<-c("gid",nam2)
+colnames(length)<-length.nam
+
+# Subtracting final
+length2<-cbind(gid=length[,1],
+            log10(length[,-1])-log10(length[,"97"]))
+
+# Adding genome size
+for(i in 1:54){size[i]<-(log10(length(tx.short[[i]][,2])))}
+size2<-cbind(rel=c(43:44,46:97),size)
+
+# Melt
+mlength<-na.omit(melt(length2[,], id.vars = c("gid")))
+colnames(mlength)<-c("gid","rel","length")
+mlength<-merge(mlength,size2, by = "rel")
+mlength2<-mlength[is.finite(mlength$length),]
+
+# Calculating error
+quant.length<- mlength2 %>% 
+  dplyr::group_by(rel) %>% 
+  dplyr::summarize(low=quantile(length, 0.1, na.rm = T),
+            med=quantile(length, 0.5, na.rm = T),
+            hi=quantile(length, 0.9, na.rm = T))
+
+## Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.length.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(quant.length,
+       aes(x = rel, color = "firebrick2", fill = "firebrick2"))+
+  geom_ribbon(aes(group =1, ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
+  geom_line(aes(group = 1, y = med),lwd=2, alpha = 0.75) +
+  ylab("Log10(length) difference + 80% CI")+
+  xlab("Ensembl release")+
+  geom_hline(yintercept = 0)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=80),
+        axis.title.y = element_text(size=60, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text.x = element_text(angle = 270, size=40),
+        axis.text.y = element_text(size = 40),
+        legend.position = "none")
+dev.off()
+
+## Merge
+quant.tpm$metric<-"tpm"
+quant.raw$metric<-"raw"
+quant.length$metric<-"length"
+
+quant<-rbind(quant.tpm,quant.raw,quant.length)
+
+## Plot all
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.all.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(quant,
+       aes(x = rel, color = metric, fill = metric, by = metric))+
+  geom_ribbon(aes(group =metric, ymin = low, ymax = hi), alpha = 0.2, colour = NA) +
+  geom_line(aes(group = metric, y = med),lwd=3, alpha = .7) +
+  scale_fill_brewer(palette = "Dark2", name = "Parameter")+
+  scale_color_brewer(palette = "Dark2", name = "Parameter")+
+  ylab("Log10 difference + 80% CI")+
+  xlab("Ensembl release")+
+  geom_hline(yintercept = 0)+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=60),
+        axis.title.y = element_text(size=55, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text.x = element_text(angle = 270, size=35),
+        axis.text.y = element_text(size = 35))
+dev.off()
+
+## Merging raw data and exploring relationships
+mmerge.tr<-merge(mtpm2,mraw2, by = c("gid","rel"))
+mmerge<-merge(mmerge.tr,mlength2, by = c("gid","rel"))
+
+# Relationship between gene length and raw reads
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/length.v.raw.jpeg", width = 2400, height = 1000, unit = 'px')
+ggplot(mmerge %>% filter(rel == "43"),
+       aes(x=length, y = raw, color = tpm))+
+  geom_point(cex = 3)+
+  scale_color_viridis_c()+
+  theme_classic()+
+  theme(legend.title = element_text(size=50),
+        legend.text = element_text(size=40),
+        axis.title = element_text(size=60),
+        axis.title.y = element_text(size=55, margin = margin(t=0,r=45,b=0,l=0)),
+        axis.text.x = element_text(size=35),
+        axis.text.y = element_text(size = 35))
+graphics.off()
+
+# Gene length changes
+long<-mmerge %>% filter(rel == "43" & length > 0) %>% select(gid)
+
+ggplot(mmerge %>% filter(gid %in% long$gid),
+       aes(x = rel, y = length, color = gid))+
+  geom_line(aes(group = gid))+
+  theme_classic()
+```
+
+# Transcript annotation differences
+## Ortholog genome only: transcripts per gene
+
+```{r}
+library(RMySQL)
+library(biomaRt)
+library(data.table)
+library(GenomicFeatures)
+library(dplyr)
+library(ggplot2)
+library(ggimage)
+
+# getting orthologs
+
+human <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                 dataset = "hsapiens_gene_ensembl",
+                 host    = "useast.ensembl.org")
+
+human.attr <- as.data.table(listAttributes(human))
+human.filt <- as.data.table(listFilters(human))
+
+preclinical.species <- c("mfascicularis", "cfamiliaris", "rnorvegicus", "mmusculus")
+
+get_orthologs <- function(sp){
+  ortho.attr <- c("ensembl_gene_id", human.attr[grepl(sp, name), name])
+  ortho <- getBM(attributes = ortho.attr,
+                 filters    = paste0("with_",sp,"_homolog"),
+                 values     = TRUE,
+                 mart       = human)
+  ortho <- unique(as.data.table(ortho)[ , species := sp])
+  setnames(ortho, gsub(paste0(sp,"_"), "", names(ortho)))
+  return(ortho)
+}
+
+ortholog.list <- lapply(preclinical.species, get_orthologs)
+ortholog <- rbindlist(ortholog.list)
+
+# cyno
+
+cyno.homolog<-ortholog[species == "mfascicularis",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(cyno.homolog)<-c("homo.gid","cyno.gid")
+
+# Making a gene to transcript table for cyno
+cyno.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Macaca_fascicularis.Macaca_fascicularis_5.0.95.gtf.gz",format="gtf")
+cyno.k<-keys(cyno.db,keytype="TXNAME")
+cyno.tx2gene<-AnnotationDbi::select(cyno.db,cyno.k,"GENEID","TXNAME")
+head(cyno.tx2gene)
+colnames(cyno.tx2gene)<-c("cyno.tx","cyno.gid")
+
+# Making a gene to transcript table for homo
+homo.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+homo.k<-keys(homo.db,keytype="TXNAME")
+homo.tx2gene<-AnnotationDbi::select(homo.db,homo.k,"GENEID","TXNAME")
+head(homo.tx2gene)
+colnames(homo.tx2gene)<-c("homo.tx","homo.gid")
+
+# Finding transcripts for the orthologous genes
+cyno.tr<-merge(cyno.homolog, cyno.tx2gene, by = "cyno.gid")
+homo.cyno.tr<-merge(cyno.homolog, homo.tx2gene, by = "homo.gid")
+
+# dog
+
+dog.homolog<-ortholog[species == "cfamiliaris",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(dog.homolog)<-c("homo.gid","dog.gid")
+
+# Making a gene to transcript table for dog
+dog.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Canis_familiaris.CanFam3.1.95.gtf.gz",format="gtf")
+dog.k<-keys(dog.db,keytype="TXNAME")
+dog.tx2gene<-AnnotationDbi::select(dog.db,dog.k,"GENEID","TXNAME")
+head(dog.tx2gene)
+colnames(dog.tx2gene)<-c("dog.tx","dog.gid")
+
+# Finding transcripts for the orthologous genes
+dog.tr<-merge(dog.homolog, dog.tx2gene, by = "dog.gid")
+homo.dog.tr<-merge(dog.homolog, homo.tx2gene, by = "homo.gid")
+
+# rat
+
+rat.homolog<-ortholog[species == "rnorvegicus",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(rat.homolog)<-c("homo.gid","rat.gid")
+
+# Making a gene to transcript table for rat
+rat.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Rattus_norvegicus.Rnor_6.0.95.gtf.gz",format="gtf")
+rat.k<-keys(rat.db,keytype="TXNAME")
+rat.tx2gene<-AnnotationDbi::select(rat.db,rat.k,"GENEID","TXNAME")
+head(rat.tx2gene)
+colnames(rat.tx2gene)<-c("rat.tx","rat.gid")
+
+# Finding transcripts for the orthologous genes
+rat.tr<-merge(rat.homolog, rat.tx2gene, by = "rat.gid")
+homo.rat.tr<-merge(rat.homolog, homo.tx2gene, by = "homo.gid")
+
+# mus
+
+# Grabbing all of the orthologs between human and mus
+
+mus.homolog<-ortholog[species == "mmusculus",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(mus.homolog)<-c("homo.gid","mus.gid")
+
+# Making a gene to transcript table for mus
+mus.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Mus_musculus.GRCm38.95.gtf.gz",format="gtf")
+mus.k<-keys(mus.db,keytype="TXNAME")
+mus.tx2gene<-AnnotationDbi::select(mus.db,mus.k,"GENEID","TXNAME")
+head(mus.tx2gene)
+colnames(mus.tx2gene)<-c("mus.tx","mus.gid")
+
+# Finding transcripts for the orthologous genes
+mus.tr<-merge(mus.homolog, mus.tx2gene, by = "mus.gid")
+homo.mus.tr<-merge(mus.homolog, homo.tx2gene, by = "homo.gid")
+
+# make df
+rl<-data.frame(native=integer(),
+               human=integer(),
+               species=c(),
+               stringsAsFactors = FALSE)
+
+# Making some comparisons
+cyno.rl<-data.frame(native=dim(cyno.tr)[1]/length(unique(cyno.tr$cyno.gid)),human=dim(homo.cyno.tr)[1]/length(unique(homo.cyno.tr$homo.gid)),species="cyno")
+dog.rl<-data.frame(native=dim(dog.tr)[1]/length(unique(dog.tr$dog.gid)),human=dim(homo.dog.tr)[1]/length(unique(homo.dog.tr$homo.gid)),species="dog")
+rat.rl<-data.frame(native=dim(rat.tr)[1]/length(unique(rat.tr$rat.gid)),human=dim(homo.rat.tr)[1]/length(unique(homo.rat.tr$homo.gid)),species="rat")
+mus.rl<-data.frame(native=dim(mus.tr)[1]/length(unique(mus.tr$mus.gid)),human=dim(homo.mus.tr)[1]/length(unique(homo.mus.tr$homo.gid)),species="mouse")
+
+# merge those
+rl<-bind_rows(cyno.rl,dog.rl,rat.rl,mus.rl)
+
+# Adding image
+image<-c("https://i.imgur.com/QuiFm08.png",
+         "https://i.imgur.com/c6U10Qo.png",
+         "https://i.imgur.com/xRRVzb1.png",
+         "https://i.imgur.com/eKCbbzh.png")
+rl$image<-image
+
+rl$species<-factor(rl$species,levels=c("cyno","dog","rat","mouse"))
+
+# plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig3b.jpeg", width = 900, height = 900, unit = "px")
+ggplot(rl,
+       aes(x=species, y=native/human))+
+  geom_image(aes(image=image),size=0.15)+
+  ylab("Orthologs: transcripts per gene relative to human")+
+  ylim(c(0,1))+
+  xlab("")+
+  theme_classic()+
+  theme(axis.title = element_text(size=35),
+        axis.title.y = element_text(margin = margin(t=0,b=0,l=0,r=20)),
+        axis.text.x = element_text(size=30),
+        axis.text.y = element_text(size=30),
+        legend.position = "none")
+graphics.off()
+
+# Establishing targets of transcripts per orthologous gene
+#cyno
+cyno.ort.c<-as.data.frame(table(cyno.tr$homo.gid))
+colnames(cyno.ort.c)<-c("homo.gid","cyno.freq")
+homo.cyno.ort.c<-as.data.frame(table(homo.cyno.tr$homo.gid))
+colnames(homo.cyno.ort.c)<-c("homo.gid","homo.freq")
+cyno.red<-merge(cyno.ort.c, homo.cyno.ort.c, by = "homo.gid")
+cyno.red$diff<-cyno.red$homo.freq-cyno.red$cyno.freq
+sub.cyno<-cyno.red$diff>0
+cyno.smaller<-cyno.red[sub.cyno,]
+
+#dog
+dog.ort.c<-as.data.frame(table(dog.tr$homo.gid))
+colnames(dog.ort.c)<-c("homo.gid","dog.freq")
+homo.dog.ort.c<-as.data.frame(table(homo.dog.tr$homo.gid))
+colnames(homo.dog.ort.c)<-c("homo.gid","homo.freq")
+dog.red<-merge(dog.ort.c, homo.dog.ort.c, by = "homo.gid")
+dog.red$diff<-dog.red$homo.freq-dog.red$dog.freq
+sub.dog<-dog.red$diff>0
+dog.smaller<-dog.red[sub.dog,]
+
+
+#rat
+rat.ort.c<-as.data.frame(table(rat.tr$homo.gid))
+colnames(rat.ort.c)<-c("homo.gid","rat.freq")
+homo.rat.ort.c<-as.data.frame(table(homo.rat.tr$homo.gid))
+colnames(homo.rat.ort.c)<-c("homo.gid","homo.freq")
+rat.red<-merge(rat.ort.c, homo.rat.ort.c, by = "homo.gid")
+rat.red$diff<-rat.red$homo.freq-rat.red$rat.freq
+sub.rat<-rat.red$diff>0
+rat.smaller<-rat.red[sub.rat,]
+
+#mus
+mus.ort.c<-as.data.frame(table(mus.tr$homo.gid))
+colnames(mus.ort.c)<-c("homo.gid","mus.freq")
+homo.mus.ort.c<-as.data.frame(table(homo.mus.tr$homo.gid))
+colnames(homo.mus.ort.c)<-c("homo.gid","homo.freq")
+mus.red<-merge(mus.ort.c, homo.mus.ort.c, by = "homo.gid")
+mus.red$diff<-mus.red$homo.freq-mus.red$mus.freq
+sub.mus<-mus.red$diff>0
+mus.smaller<-mus.red[sub.mus,]
+```
+
+# Reducing transcriptome size
+
+## Subsampling transcripts
+
+```{r}
+library(RMySQL)
+library(biomaRt)
+library(data.table)
+library(GenomicFeatures)
+library(dplyr)
+library(ggplot2)
+library(ggimage)
+library(RMariaDB)
+library(seqinr)
+
+
+# getting orthologs
+
+human <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                 dataset = "hsapiens_gene_ensembl",
+                 host    = "useast.ensembl.org")
+
+human.attr <- as.data.table(listAttributes(human))
+human.filt <- as.data.table(listFilters(human))
+
+preclinical.species <- c("mfascicularis", "cfamiliaris", "rnorvegicus", "mmusculus")
+
+get_orthologs <- function(sp){
+  ortho.attr <- c("ensembl_gene_id", human.attr[grepl(sp, name), name])
+  ortho <- getBM(attributes = ortho.attr,
+                 filters    = paste0("with_",sp,"_homolog"),
+                 values     = TRUE,
+                 mart       = human)
+  ortho <- unique(as.data.table(ortho)[ , species := sp])
+  setnames(ortho, gsub(paste0(sp,"_"), "", names(ortho)))
+  return(ortho)
+}
+
+ortholog.list <- lapply(preclinical.species, get_orthologs)
+ortholog <- rbindlist(ortholog.list)
+
+# cyno
+
+cyno.homolog<-ortholog[species == "mfascicularis",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(cyno.homolog)<-c("homo.gid","cyno.gid")
+
+# Making a gene to transcript table for cyno
+cyno.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Macaca_fascicularis.Macaca_fascicularis_5.0.95.gtf.gz",format="gtf")
+cyno.k<-keys(cyno.db,keytype="TXNAME")
+cyno.tx2gene<-AnnotationDbi::select(cyno.db,cyno.k,"GENEID","TXNAME")
+head(cyno.tx2gene)
+colnames(cyno.tx2gene)<-c("cyno.tx","cyno.gid")
+
+# Making a gene to transcript table for homo
+homo.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+homo.k<-keys(homo.db,keytype="TXNAME")
+homo.tx2gene<-AnnotationDbi::select(homo.db,homo.k,"GENEID","TXNAME")
+head(homo.tx2gene)
+colnames(homo.tx2gene)<-c("homo.tx","homo.gid")
+
+# Finding transcripts for the orthologous genes
+cyno.tr<-merge(cyno.homolog, cyno.tx2gene, by = "cyno.gid")
+homo.cyno.tr<-merge(cyno.homolog, homo.tx2gene, by = "homo.gid")
+
+# dog
+
+dog.homolog<-ortholog[species == "cfamiliaris",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(dog.homolog)<-c("homo.gid","dog.gid")
+
+# Making a gene to transcript table for dog
+dog.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Canis_familiaris.CanFam3.1.95.gtf.gz",format="gtf")
+dog.k<-keys(dog.db,keytype="TXNAME")
+dog.tx2gene<-AnnotationDbi::select(dog.db,dog.k,"GENEID","TXNAME")
+head(dog.tx2gene)
+colnames(dog.tx2gene)<-c("dog.tx","dog.gid")
+
+# Finding transcripts for the orthologous genes
+dog.tr<-merge(dog.homolog, dog.tx2gene, by = "dog.gid")
+homo.dog.tr<-merge(dog.homolog, homo.tx2gene, by = "homo.gid")
+
+# rat
+
+rat.homolog<-ortholog[species == "rnorvegicus",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(rat.homolog)<-c("homo.gid","rat.gid")
+
+# Making a gene to transcript table for rat
+rat.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Rattus_norvegicus.Rnor_6.0.95.gtf.gz",format="gtf")
+rat.k<-keys(rat.db,keytype="TXNAME")
+rat.tx2gene<-AnnotationDbi::select(rat.db,rat.k,"GENEID","TXNAME")
+head(rat.tx2gene)
+colnames(rat.tx2gene)<-c("rat.tx","rat.gid")
+
+# Finding transcripts for the orthologous genes
+rat.tr<-merge(rat.homolog, rat.tx2gene, by = "rat.gid")
+homo.rat.tr<-merge(rat.homolog, homo.tx2gene, by = "homo.gid")
+
+# mus
+
+# Grabbing all of the orthologs between human and mus
+
+mus.homolog<-ortholog[species == "mmusculus",.(ensembl_gene_id, homolog_ensembl_gene)]
+
+colnames(mus.homolog)<-c("homo.gid","mus.gid")
+
+# Making a gene to transcript table for mus
+mus.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Mus_musculus.GRCm38.95.gtf.gz",format="gtf")
+mus.k<-keys(mus.db,keytype="TXNAME")
+mus.tx2gene<-AnnotationDbi::select(mus.db,mus.k,"GENEID","TXNAME")
+head(mus.tx2gene)
+colnames(mus.tx2gene)<-c("mus.tx","mus.gid")
+
+# Finding transcripts for the orthologous genes
+mus.tr<-merge(mus.homolog, mus.tx2gene, by = "mus.gid")
+homo.mus.tr<-merge(mus.homolog, homo.tx2gene, by = "homo.gid")
+
+# make df
+rl<-data.frame(native=integer(),
+               human=integer(),
+               species=c(),
+               stringsAsFactors = FALSE)
+
+# Making some comparisons
+cyno.rl<-data.frame(native=dim(cyno.tr)[1]/length(unique(cyno.tr$cyno.gid)),human=dim(homo.cyno.tr)[1]/length(unique(homo.cyno.tr$homo.gid)),species="cyno")
+dog.rl<-data.frame(native=dim(dog.tr)[1]/length(unique(dog.tr$dog.gid)),human=dim(homo.dog.tr)[1]/length(unique(homo.dog.tr$homo.gid)),species="dog")
+rat.rl<-data.frame(native=dim(rat.tr)[1]/length(unique(rat.tr$rat.gid)),human=dim(homo.rat.tr)[1]/length(unique(homo.rat.tr$homo.gid)),species="rat")
+mus.rl<-data.frame(native=dim(mus.tr)[1]/length(unique(mus.tr$mus.gid)),human=dim(homo.mus.tr)[1]/length(unique(homo.mus.tr$homo.gid)),species="mouse")
+
+# merge those
+rl<-bind_rows(cyno.rl,dog.rl,rat.rl,mus.rl)
+
+# Adding image
+image<-c("https://i.imgur.com/QuiFm08.png",
+         "https://i.imgur.com/c6U10Qo.png",
+         "https://i.imgur.com/xRRVzb1.png",
+         "https://i.imgur.com/eKCbbzh.png")
+rl$image<-image
+
+rl$species<-factor(rl$species,levels=c("cyno","dog","rat","mouse"))
+
+# plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig4b.jpeg", width = 900, height = 900, unit = "px")
+ggplot(rl,
+       aes(x=species, y=native/human))+
+  geom_image(aes(image=image),size=0.15)+
+  ylab("Orthologs: transcripts per gene relative to human")+
+  ylim(c(0,1))+
+  xlab("")+
+  theme_classic()+
+  theme(axis.title = element_text(size=35),
+        axis.title.y = element_text(margin = margin(t=0,b=0,l=0,r=20)),
+        axis.text.x = element_text(size=30),
+        axis.text.y = element_text(size=30),
+        legend.position = "none")
+graphics.off()
+
+# Establishing targets of transcripts per orthologous gene
+#cyno
+cyno.ort.c<-as.data.frame(table(cyno.tr$homo.gid))
+colnames(cyno.ort.c)<-c("homo.gid","cyno.freq")
+homo.cyno.ort.c<-as.data.frame(table(homo.cyno.tr$homo.gid))
+colnames(homo.cyno.ort.c)<-c("homo.gid","homo.freq")
+cyno.red<-merge(cyno.ort.c, homo.cyno.ort.c, by = "homo.gid")
+cyno.red$diff<-cyno.red$homo.freq-cyno.red$cyno.freq
+sub.cyno<-cyno.red$diff>0
+cyno.smaller<-cyno.red[sub.cyno,]
+
+#dog
+dog.ort.c<-as.data.frame(table(dog.tr$homo.gid))
+colnames(dog.ort.c)<-c("homo.gid","dog.freq")
+homo.dog.ort.c<-as.data.frame(table(homo.dog.tr$homo.gid))
+colnames(homo.dog.ort.c)<-c("homo.gid","homo.freq")
+dog.red<-merge(dog.ort.c, homo.dog.ort.c, by = "homo.gid")
+dog.red$diff<-dog.red$homo.freq-dog.red$dog.freq
+sub.dog<-dog.red$diff>0
+dog.smaller<-dog.red[sub.dog,]
+
+
+#rat
+rat.ort.c<-as.data.frame(table(rat.tr$homo.gid))
+colnames(rat.ort.c)<-c("homo.gid","rat.freq")
+homo.rat.ort.c<-as.data.frame(table(homo.rat.tr$homo.gid))
+colnames(homo.rat.ort.c)<-c("homo.gid","homo.freq")
+rat.red<-merge(rat.ort.c, homo.rat.ort.c, by = "homo.gid")
+rat.red$diff<-rat.red$homo.freq-rat.red$rat.freq
+sub.rat<-rat.red$diff>0
+rat.smaller<-rat.red[sub.rat,]
+
+#mus
+mus.ort.c<-as.data.frame(table(mus.tr$homo.gid))
+colnames(mus.ort.c)<-c("homo.gid","mus.freq")
+homo.mus.ort.c<-as.data.frame(table(homo.mus.tr$homo.gid))
+colnames(homo.mus.ort.c)<-c("homo.gid","homo.freq")
+mus.red<-merge(mus.ort.c, homo.mus.ort.c, by = "homo.gid")
+mus.red$diff<-mus.red$homo.freq-mus.red$mus.freq
+sub.mus<-mus.red$diff>0
+mus.smaller<-mus.red[sub.mus,]
+
+# Restricting transcriptomes to PC species size
+
+# Cyno
+
+## Setting df to dt
+cyno.smaller<-setDT(cyno.smaller)
+homo.tx2gene<-setDT(homo.tx2gene)
+
+dat.cyno <- merge(cyno.smaller,
+             homo.cyno.tr,
+             by = "homo.gid")
+
+dat.cyno$cyno.gid<-NULL
+
+## Creating a list of iterated subsampled transcriptomes
+ll <- lapply(1:100, 
+             function(x) dat.cyno[, 
+                             .(val = sample(homo.tx, 
+                                            size = unique(cyno.freq), 
+                                            replace = FALSE, 
+                                            prob = NULL),
+                               iter = x), 
+                             by = homo.gid])
+list.cyno <- rbindlist(ll)
+list.cyno <- setDT(list.cyno)
+
+# dog
+
+## Setting df to dt
+dog.smaller<-setDT(dog.smaller)
+homo.tx2gene<-setDT(homo.tx2gene)
+
+dat.dog <- merge(dog.smaller,
+             homo.dog.tr,
+             by = "homo.gid")
+
+dat.dog$dog.gid<-NULL
+
+## Creating a list of iterated subsampled transcriptomes
+ll <- lapply(1:100, 
+             function(x) dat.dog[, 
+                             .(val = sample(homo.tx, 
+                                            dog.freq[1], 
+                                            replace = FALSE, 
+                                            prob = NULL),
+                               iter = x), 
+                             by = homo.gid])
+list.dog <- rbindlist(ll)
+list.dog <- setDT(list.dog)
+
+# rat
+
+## Setting df to dt
+rat.smaller<-setDT(rat.smaller)
+homo.tx2gene<-setDT(homo.tx2gene)
+
+dat.rat <- merge(rat.smaller,
+             homo.rat.tr,
+             by = "homo.gid")
+
+dat.rat$rat.gid<-NULL
+
+## Creating a list of iterated subsampled transcriptomes
+ll <- lapply(1:100, 
+             function(x) dat.rat[, 
+                             .(val = sample(homo.tx, 
+                                            rat.freq[1], 
+                                            replace = FALSE, 
+                                            prob = NULL),
+                               iter = x), 
+                             by = homo.gid])
+list.rat <- rbindlist(ll)
+list.rat <- setDT(list.rat)
+
+# mus
+
+## Setting df to dt
+mus.smaller<-setDT(mus.smaller)
+homo.tx2gene<-setDT(homo.tx2gene)
+
+dat.mus <- merge(mus.smaller,
+             homo.mus.tr,
+             by = "homo.gid")
+
+dat.mus$mus.gid<-NULL
+
+## Creating a list of iterated subsampled transcriptomes
+ll <- lapply(1:100, 
+             function(x) dat.mus[, 
+                             .(val = sample(homo.tx, 
+                                            mus.freq[1], 
+                                            replace = FALSE, 
+                                            prob = NULL),
+                               iter = x), 
+                             by = homo.gid])
+list.mus <- rbindlist(ll)
+list.mus <- setDT(list.mus)
+
+# cyno
+
+for(i in 1:100){
+  # Defining species
+  sp <-  "mfascicularis"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = list.cyno[iter == i, val],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_cyno", i, "fa", sep = ".", collapse = "."))
+}
+
+# dog
+
+for(i in 1:100){
+  # Defining species
+  sp <-  "cfamiliaris"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = list.dog[iter == i, val],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_dog", i, "fa", sep = ".", collapse = "."))
+}
+
+# rat
+
+for(i in 1:100){
+  # Defining species
+  sp <-  "rnorvegicus"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = list.rat[iter == i, val],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_rat", i, "fa", sep = ".", collapse = "."))
+}
+
+# mus
+
+for(i in 1:100){
+  # Defining species
+  sp <-  "mmusculus"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = list.mus[iter == i, val],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_mus", i, "fa", sep = ".", collapse = "."))
+}
+```
+
+dat.cyno[, 
+                             .(val = sample(homo.tx, 
+                                            size = cyno.freq[1], 
+                                            replace = FALSE, 
+                                            prob = NULL)), 
+                             by = homo.gid]
+
+## Indexing 400 subsampled genomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+cd $parent
+
+# Indexing
+for i in $(ls -1); do
+short=$(echo ${i} | sed 's/\.fa//g')
+my_genome=${parent}/${i}
+my_out=${parent}/${short}_index
+my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
+"${my_salmon} index \
+-t ${my_genome} \
+-i ${my_out} \
+--type quasi \
+-k 31"
+done
+```
+
+## Adding full length ortho transcriptome
+
+```{r}
+# cyno
+  # Defining species
+  sp <-  "mfascicularis"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = dat.cyno[,homo.tx],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_cyno_full.fa")
+
+# dog
+
+  # Defining species
+  sp <-  "cfamiliaris"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = dat.dog[,homo.tx],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_dog_full.fa")
+  
+# rat
+
+  # Defining species
+  sp <-  "rnorvegicus"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = dat.rat[,homo.tx],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_rat_full.fa")
+
+# mus
+
+  # Defining species
+  sp <-  "mmusculus"
+  
+  # Establishing ensembl connection
+  gene_mart <- useMart(biomart = "ENSEMBL_MART_ENSEMBL",
+                       dataset = paste0(sp,"_gene_ensembl"),
+                       host    = "www.ensembl.org")
+  
+  # Grabbing transcript sequence for all the transcripts
+  tseq <- biomaRt::getSequence(id = dat.mus[,homo.tx],
+                      type = "ensembl_transcript_id", 
+                      seqType = "cdna", 
+                      mart = gene_mart)
+  
+  # Writing to a fasta file
+  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_mus_full.fa")
+
+```
+
+## Indexing full ortho transcriptomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+cd $parent
+
+# Indexing
+for i in $(ls -1 *full*); do
+short=$(echo ${i} | sed 's/\.fa//g')
+my_genome=${parent}/${i}
+my_out=${parent}/${short}_index
+my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
+"${my_salmon} index \
+-t ${my_genome} \
+-i ${my_out} \
+--type quasi \
+-k 31"
+done
+```
+
+## Mapping sample to various transcriptomes
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+cd $parent
+sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+name=itox000633
+
+for i in $(ls -1d *_index/); do
+short=$(echo ${i} | sed 's/\_index.*//g')
+bsub -q express -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
+"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+-i ${parent}/${i} \
+-p 4 \
+--validateMappings \
+-l IU \
+-1 ${sample}_1.fq.gz \
+-2 ${sample}_2.fq.gz \
+-o ${name}_${short}.quant"
+done
+```
+
+## Move files to summary folder
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+cd $parent
+
+mkdir summary
+
+for i in $(ls -1d *quant); do
+short=$(echo $i | sed 's/\.quant//g')
+ln -s ${parent}/${i}/quant.sf ${parent}/summary/${short}.sf
+done
+```
+
+## Getting mapping rates
+
+```{bash}
+parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+cd $parent
+
+
+cat *mapping.err | grep "\[ index \]" | sed 's/.*\/\///g' | sed 's/\_index.*//g' > mapping.txt
+cat *mapping.err | grep "Mapping rate" | sed 's/.*\=\ //g' | sed 's/\%//g' > rate.txt
+
+paste mapping.txt rate.txt > mapping_rate.txt
+```
+
+## Reduced transcriptome effects
+
+```{r}
+library(RMySQL)
+library(biomaRt)
+library(data.table)
+library(GenomicFeatures)
+library(dplyr)
+library(ggplot2)
+library(ggimage)
+library(RMariaDB)
+library(seqinr)
+
+# Making a gene to transcript table for homo
+homo.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+homo.k<-keys(homo.db,keytype="TXNAME")
+homo.tx2gene<-AnnotationDbi::select(homo.db,homo.k,"GENEID","TXNAME")
+head(homo.tx2gene)
+colnames(homo.tx2gene)<-c("tx","gid")
+
+### reading in quant files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg/", "*full.sf",full.names=TRUE)
+gobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*\\/quant\\_trpg\\/","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=TRUE)
+  gobj[[i]][,4]<-as.numeric(gobj[[i]][,4])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","tx","gl","egl","tpm","raw")
+
+## Merging with gid
+dat.full<-merge(df, homo.tx2gene, by = "tx")
+
+# Sum to gene level
+## Summing data to gene level
+gendat.full<-dat.full[,.(final_gene_tpm=sum(tpm), sum_gl_full=sum(gl), sum_raw_full=(sum(raw))),by =.(gid,iter)]
+
+## Adding species names
+spnam<-gsub(".*hs\\_","",gendat.full$iter)
+spnam2<-gsub("\\_full","",spnam)
+gendat.full$sp<-spnam2
+
+# Adding the rest of the files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg/", "*[0-9].sf",full.names=TRUE)
+gobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*\\/quant\\_trpg\\/","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=TRUE)
+  gobj[[i]][,4]<-as.numeric(gobj[[i]][,4])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","tx","gl","egl","tpm","raw")
+
+## Merging with gid
+dat.sub<-merge(df, homo.tx2gene, by = "tx")
+
+# Sum to gene level
+## Summing data to gene level
+gendat.sub<-dat.sub[,.(gene_tpm=sum(tpm), sum_gl_sub=sum(gl), sum_raw_sub=sum(raw)), by = .(gid,iter)]
+
+## Adding species names
+spnam<-gsub(".*hs\\_","",gendat.sub$iter)
+spnam2<-gsub("\\..*","",spnam)
+gendat.sub$sp<-spnam2
+
+# Merging dfs
+gendat<-merge(gendat.sub, gendat.full[,.(gid, final_gene_tpm, sum_gl_full, sum_raw_full, sp)], by = c("gid", "sp"))
+
+# removing values <1
+gendat2<- gendat[gene_tpm>1&final_gene_tpm>1]
+
+# tpm difference difference
+gendat2$tpm_logdiff<-log10(gendat2$gene_tpm)-log10(gendat2$final_gene_tpm)
+gendat2$raw_logdiff<-log10(gendat2$sum_raw_sub)-log10(gendat2$sum_raw_full)
+
+# factor rearrangement
+gendat2$sp <- factor(gendat2$sp, levels = c("cyno","dog","rat","mus"))
+
+# Proportion of total transcript length
+gendat2$ldiff<-(gendat2$sum_gl_sub/gendat2$sum_gl_full)*100
+
+# Plot
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig.S4a.jpeg", width = 1400, height = 1400, unit = 'px')
+ggplot(gendat2,
+       aes(x = sp, y = tpm_logdiff, fill = sp))+
+  geom_violin(draw_quantiles = 0.5, scale = "width")+
+  theme_classic()+
+  geom_hline(yintercept=0)+
+  ylab("TPM values relative full transcriptome (log10 difference)")+
+  theme(legend.position = "none",
+        axis.text = element_text(size=40),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=50))
+graphics.off()
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig.S4b.jpeg", width = 1400, height = 1400, unit = 'px')
+ggplot(gendat2,
+       aes(x = sp, y = raw_logdiff, fill = sp))+
+  geom_violin(draw_quantiles = 0.5, scale = "width")+
+  theme_classic()+
+  geom_hline(yintercept=0)+
+  ylab("Mapped reads relative full transcriptome (log10 difference)")+
+  theme(legend.position = "none",
+        axis.text = element_text(size=40),
+        axis.title.x = element_blank(),
+        axis.title = element_text(size=50))
+graphics.off()
+
+# Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig4a.jpeg", width = 1300, height = 2000, unit = 'px')
+ggplot(gendat2,
+       aes(x=ldiff,y=tpm_logdiff,color=sp))+
+  geom_point(cex = .2, alpha = .2)+
+  facet_grid(sp ~ .)+
+  geom_hline(yintercept=0)+
+  ylab("TPM values relative full transcriptome (log10 difference)")+
+  xlab("Transcript length relative to full gene (%)")+
+#  stat_smooth(method = "gam", col="steelblue")+
+  theme_classic()+
+  theme(legend.position = "none",
+        axis.text = element_text(size=30),
+        axis.title = element_text(size=40),
+        strip.text = element_text(size=30))
+graphics.off()
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig4b.jpeg", width = 1300, height = 2000, unit = 'px')
+ggplot(gendat2,
+       aes(x=ldiff,y=raw_logdiff,color=sp))+
+  geom_point(cex = .2, alpha = .2)+
+  facet_grid(sp ~ .)+
+  geom_hline(yintercept=0)+
+  ylab("Mapped reads relative full transcriptome (log10 difference)")+
+  xlab("Transcript length relative to full gene (%)")+
+#  stat_smooth(method = "gam", col="steelblue")+
+  theme_classic()+
+  theme(legend.position = "none",
+        axis.text = element_text(size=30),
+        axis.title = element_text(size=40),
+        strip.text = element_text(size=30))
+graphics.off()
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig5.jpeg", width = 2000, height = 1000, unit = 'px')
+ggplot(gendat2,
+       aes(x=raw_logdiff,y=tpm_logdiff,color=ldiff))+
+  geom_point(cex = .2, alpha = .2)+
+  facet_grid(sp ~ .)+
+  geom_hline(yintercept=0)+
+  ylab("Log10(tpm)  relative to full transcriptome")+
+  xlab("Log10(reads) relative full transcriptome")+
+  scale_color_gradient2(name = "Proportion of full gene", low="steelblue",mid="grey70",high="firebrick1",
+                        guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme_classic()+
+  theme(axis.text = element_text(size=40),
+        axis.title = element_text(size=40),
+        legend.title = element_text(size=40),
+        legend.text = element_text(size = 40),
+        strip.text = element_blank())
+graphics.off()
+
+# Exploring genes with highest difference in tpm
+ghigh<-gendat2[raw_logdiff>0 & tpm_logdiff>0]
+
+mean_ghigh<-c()
+## Grabbing means for each species
+for(i in unique(ghigh[,(sp)])){
+  mean_ghigh[i]<-mean(log10(ghigh[sp == i, (final_gene_tpm)]), na.rm = TRUE)
+}
+mean_ghigh<-setDT(as.data.frame(mean_ghigh), keep.rownames = TRUE)[]
+colnames(mean_ghigh)<-c("sp","odd_log10_tpm")
+
+gendat2$log10_final_gene_tpm<- log10(gendat2$final_gene_tpm)
+
+ll <- lapply(1:1000, 
+             function(x) gendat2[, 
+                             .(val = mean(sample(gendat2[,(log10_final_gene_tpm)], 
+                                            size = length(ghigh$final_gene_tpm),
+                                            replace = FALSE, 
+                                            prob = NULL),
+                               na.rm = TRUE)), 
+                             by = sp])
+list.sim <- rbindlist(ll)
+
+# Merging
+dat.sim<-merge(list.sim,mean_ghigh, by = "sp")
+
+dat.sim$sp<-factor(dat.sim$sp, levels = c("cyno","dog","rat","mus"))
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS5a.jpeg", width = 2000, height = 800, unit = 'px')
+ggplot(dat.sim,
+       aes(x = val, color = sp))+
+  geom_histogram(binwidth = 0.0001)+
+  theme_classic()+
+  facet_grid(sp ~ .)+
+  ylab("Frequency")+
+  xlab("Log10(tpm) values")+
+  geom_vline(data = dat.sim, aes(xintercept = odd_log10_tpm), lwd = 3)+
+  xlim(c(0.70,1))+
+  theme(legend.position = "none",
+        strip.text = element_blank(),
+        axis.text.x = element_text(size = 40),
+        axis.text.y = element_text(size =20),
+        axis.title.x = element_text(size = 50),
+        axis.title.y = element_text(size = 50, margin = margin(t=0,r=50,l=0,b=0)))
+graphics.off()
+
+# Repeating the same for gene length
+mean_len_ghigh<-c()
+for(i in unique(ghigh[,(sp)])){
+  mean_len_ghigh[i]<-mean(ghigh[sp == i, (sum_gl_full)], na.rm = TRUE)
+}
+mean_len_ghigh<-setDT(as.data.frame(mean_len_ghigh), keep.rownames = TRUE)[]
+colnames(mean_len_ghigh)<-c("sp","odd_length")
+
+ll_len <- lapply(1:1000,
+             function(x) gendat2[,
+                             .(val = mean(sample(gendat2[,(sum_gl_full)],
+                                            size = length(ghigh$sum_gl_full),
+                                            replace = FALSE,
+                                            prob = NULL),
+                               na.rm = TRUE)),
+                             by = sp])
+list.len.sim <- rbindlist(ll_len)
+
+# Merging
+dat.len.sim<-merge(list.len.sim,mean_len_ghigh, by = "sp")
+
+dat.len.sim$sp<-factor(dat.len.sim$sp, levels = c("cyno","dog","rat","mus"))
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS5b.jpeg", width = 2000, height = 800, unit = 'px')
+ggplot(dat.len.sim,
+       aes(x = val, color = sp))+
+  geom_histogram(binwidth = 10)+
+  theme_classic()+
+  facet_grid(sp ~ .)+
+  ylab("Frequency")+
+  xlab("Total transcript length per gene")+
+  geom_vline(data = dat.len.sim, aes(xintercept = odd_length), lwd = 3)+
+  theme(legend.position = "none",
+        strip.text = element_blank(),
+        axis.text.x = element_text(size = 40),
+        axis.text.y = element_text(size =20),
+        axis.title.x = element_text(size = 50),
+        axis.title.y = element_text(size = 50, margin = margin(t=0,r=50,l=0,b=0)))
+graphics.off()
+
+
+### Testing the overestimated genes
+ghighall<-gendat2 %>% filter(gid %in% unique(ghigh$gid))
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS7a.jpeg", width = 2600, height = 1000, unit = 'px')
+ggplot(ghighall %>% filter(sp == "cyno"),
+       aes(x=raw_logdiff, y=tpm_logdiff, color=ldiff))+
+  geom_point(aes(size = ldiff), alpha = 0.2)+
+  facet_grid(sp ~ .)+
+  geom_hline(yintercept=0)+
+  xlim(c(-3,3))+
+  ylim(c(-3,3))+
+  ylab("Log10(tpm)  relative to full transcriptome")+
+  xlab("Log10(reads) relative full transcriptome")+
+  scale_color_gradient2(name = "Proportion of full gene", low="steelblue",midpoint = 50, mid="grey70",high="firebrick1",
+                        guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme_classic()+
+  theme(axis.text = element_text(size=40),
+        axis.title = element_text(size=40),
+        legend.title = element_text(size=40),
+        legend.text = element_text(size = 40),
+        strip.text = element_blank())
+graphics.off()
+
+## Testing not those
+glowall<-gendat2 %>% filter(!gid %in% unique(ghigh$gid))
+
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS7b.jpeg", width = 2600, height = 1000, unit = 'px')
+ggplot(glowall %>% filter(sp == "cyno"),
+       aes(x=raw_logdiff, y=tpm_logdiff, color=ldiff))+
+  geom_point(aes(size = ldiff), alpha = 0.2)+
+  facet_grid(sp ~ .)+
+  geom_hline(yintercept=0)+
+  xlim(c(-3,3))+
+  ylim(c(-3,3))+
+  ylab("Log10(tpm)  relative to full transcriptome")+
+  xlab("Log10(reads) relative full transcriptome")+
+  scale_color_gradient2(name = "Proportion of full gene", low="steelblue",midpoint = 50, mid="grey70",high="firebrick1",
+                        guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme_classic()+
+  theme(axis.text = element_text(size=40),
+        axis.title = element_text(size=40),
+        legend.title = element_text(size=40),
+        legend.text = element_text(size = 40),
+        strip.text = element_blank())
+graphics.off()
+
+
+## Merging with designations
+ghighall$club<-"high"
+glowall$club<-"low"
+
+gall<-rbind(ghighall,glowall)
+
+ggplot(gall,
+       aes(x = ldiff, fill = club))+
+  geom_histogram(aes(color = club), bins = 30)
+```
+
+## TMM correction for reduced representation txtomes
+```{r}
+library(data.table)
+library(GenomicFeatures)
+library(dplyr)
+library(ggplot2)
+library(tximport)
+library(edgeR)
+
+# Making a gene to transcript table for homo
+homo.db<-makeTxDbFromGFF("/Users/OZIOLE/Desktop/projects/zoomap/data/gtf/Homo_sapiens.GRCh38.95.gtf.gz",format="gtf")
+homo.k<-keys(homo.db,keytype="TXNAME")
+homo.tx2gene<-AnnotationDbi::select(homo.db,homo.k,"GENEID","TXNAME")
+head(homo.tx2gene)
+colnames(homo.tx2gene)<-c("tx","gid")
+
+### reading in quant files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg/", "*cyno_full.sf",full.names=TRUE)
+gobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*\\/quant\\_trpg\\/","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=TRUE)
+  gobj[[i]][,4]<-as.numeric(gobj[[i]][,4])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","tx","gl","egl","tpm","raw")
+
+## Merging with gid
+dat.full<-merge(df, homo.tx2gene, by = "tx")
+
+# Sum to gene level
+## Summing data to gene level
+gendat.full<-dat.full[,.(final_gene_tpm=sum(tpm), sum_gl_full=sum(gl), sum_raw_full=(sum(raw))),by =.(gid,iter)]
+
+# Adding rest of files
+
+### reading in quant files
+gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg_short/", "*cyno",full.names=TRUE)
+gfiles<-head(gfiles,n=100)
+gobj<-list()
+
+### Cleaning up names to ake them consistent
+nam1<-gsub(".*\\/quant\\_trpg\\_short\\/","",gfiles)
+nam2<-gsub(".sf","",nam1)
+
+### Reading that list in
+for(i in 1:length(gfiles)){
+  gobj[[i]]<-read.table(gfiles[i],stringsAsFactors=FALSE,header=TRUE)
+  gobj[[i]][,4]<-as.numeric(gobj[[i]][,4])
+}
+
+## Naming object
+names(gobj)<-nam2
+
+## rbind list
+df<-rbindlist(gobj, use.names = FALSE, idcol = TRUE)
+colnames(df)<-c("iter","tx","gl","egl","tpm","raw")
+
+## Merging with gid
+dat<-merge(df, homo.tx2gene, by = "tx")
+
+# Sum to gene level
+## Summing data to gene level
+gendat<-dat[,.(gene_tpm=sum(tpm), sum_gl_sub=sum(gl), sum_raw_sub=(sum(raw))),by =.(gid,iter)]
+gendat<-gendat %>% filter(gene_tpm > 1)
+
+# Casting into df
+gencast<-as.data.frame(dcast(gendat[,1:3], gid~iter))
+rownames(gencast)<-gencast$gid
+gencast$gid<-NULL
+gencast<-na.omit(gencast)
+
+## Deriving correction TMM factors
+gentmm<-calcNormFactors(gencast, method = "TMM")
+
+## Applying tmm factors
+gencorr<-data.frame(mapply('*', gencast, gentmm))
+rownames(gencorr)<-rownames(gencast)
+
+# Returning values to gendat
+gencorr2<-setDT(gencorr, keep.rownames = TRUE)[]
+gencorrmelt<-melt(gencorr2, value.name = "rn")
+colnames(gencorrmelt)<-c("gid","iter","tmm")
+
+gendat.sub<-merge(gendat,gencorrmelt, by = c("gid","iter"))
+
+# Merging dfs
+gendat<-merge(gendat.sub, gendat.full[,.(gid, final_gene_tpm, sum_gl_full, sum_raw_full)], by = "gid")
+
+# removing values <1
+gendat2<- gendat %>% filter(gene_tpm>1 & final_gene_tpm > 1 & tmm > 1)
+
+# tpm difference difference
+gendat2$tpm_logdiff<-log10(gendat2$gene_tpm)-log10(gendat2$final_gene_tpm)
+gendat2$raw_logdiff<-log10(gendat2$sum_raw_sub)-log10(gendat2$sum_raw_full)
+gendat2$tmm_logdiff<-log10(gendat2$tmm)-log10(gendat2$final_gene_tpm)
+
+# Proportion of total transcript length
+gendat2$ldiff<-(gendat2$sum_gl_sub/gendat2$sum_gl_full)*100
+
+# Plotting
+jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS9.jpeg", width = 2000, height = 1000, unit = 'px')
+ggplot(gendat2,
+       aes(x=raw_logdiff, y=tmm_logdiff, color=ldiff))+
+  geom_point(aes(size = ldiff), alpha = 0.2)+
+  geom_hline(yintercept=0)+
+  xlim(c(-3,3))+
+  ylim(c(-3,3))+
+  ylab("Log10(tpm) relative to full transcriptome")+
+  xlab("Log10(reads) relative full transcriptome")+
+  scale_color_gradient2(name = "Proportion of full gene", low="steelblue",midpoint = 50, mid="grey70",high="firebrick1",
+                        guide = guide_colorbar(barwidth = 4, barheight = 15))+
+  theme_classic()+
+  theme(axis.text = element_text(size=40),
+        axis.title = element_text(size=40),
+        legend.title = element_text(size=40),
+        legend.text = element_text(size = 40),
+        strip.text = element_blank())
+graphics.off()
+```
