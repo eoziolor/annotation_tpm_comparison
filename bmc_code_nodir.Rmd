@@ -11,6 +11,10 @@ output: html_document
 
 # Ensembl genome downloaded
 
+* Use the below bash script to download the Ensembl genomes across species for v 95.
+* Environment: This snippet was ran as an executable bash script in a command line environment. The necessary tools to run this are salmon version 1.4.0. This can be installed by downloading https://github.com/COMBINE-lab/salmon/releases/download/v1.4.0/salmon-1.4.0_linux_x86_64.tar.gz and running ```tar -xvzf salmon-1.4.0_linux_x86_64.tar.gz```
+* Files: None required, downloaded files through script
+
 ```{bash}
 #!/bin/bash
 set -e
@@ -94,7 +98,7 @@ for i in {1..7}; do
 	my_dir=$parent/$com
 	my_genome=$my_dir/$lat.fa.gz
 	my_out=$my_dir/salmon_index
-	my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+	my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 	
 	$my_salmon index \
 	-t $my_genome \
@@ -127,7 +131,12 @@ exit 0;
 
 ## Selecting gene set to iterate
 
-* Once human sample is selected, I took the quant file and grabbed a random gene from 10 sets of bins, separated by expression levels betweeen 0.5 and 5 log10 transcripts per million (tpm)
+* Once human sample is selected, I took the quant file and grabbed a random gene from 10 sets of bins, separated by expression levels betweeen 0.5 and 5 log10 transcripts per million (tpm). Here is the script used to select those genes. Those genes are:
+
+"ENSG00000091704","ENSG00000168928","ENSG00000010438","ENSG00000198763","ENSG00000254772","ENSG00000142676","ENSG00000138161","ENSG00000140688","ENSG00000154556","ENSG00000198561"
+
+* Environment: This was run in R environment with the shown packages loaded.
+* Files: quantitation file for teh chosen sample (provided).
 
 ```{r}
 library(dplyr)
@@ -135,7 +144,7 @@ library(biomaRt)
 library(data.table)
 
 # Reading in quantitation of pancreatic sample from HPA
-panc<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/quant.sf", header = TRUE, sep = '\t')
+panc<-read.table("/root/tpm_genome_analysis/data/human_sample/quant.sf", header = TRUE, sep = '\t')
 
 # Plotting histogram of it
 hist(log10(panc[,3]), breaks = 1000)
@@ -151,10 +160,10 @@ hist(log10(panc[,3]), breaks = 1000)
 #   df[k,]<-head(temp[sample(1:nrow(temp)),],n=1)
 # }
 # 
-# write.table(df,"/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', col.names = TRUE, row.names = FALSE, quote = FALSE)
+# write.table(df,"/root/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', col.names = TRUE, row.names = FALSE, quote = FALSE)
 
 # Reading in genes from the initial selection
-df<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+df<-read.table("/root/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
 
 # Removing transcript version from names
 ten<-gsub("[.].*","",df$Name)
@@ -178,20 +187,35 @@ tseq <- getSequence(id = ten,
 tseq$ensembl_transcript_id<-gsub("$","_test",tseq$ensembl_transcript_id)
 
 # Saving sequences as fasta file
-exportFASTA(tseq, "/proprietary/tpm_genome_analysis/data/human_sample/theten.fa")
+exportFASTA(tseq, "/root/tpm_genome_analysis/data/human_sample/theten.fa")
 ```
 
 ## Subsampling human genome
 * First taking the sequences of the selected transcripts out of the ensembl transcriptome
 * Subsampling into 99 different sizes (from 1-99% of original size based on number of transcripts included)
+* Environment: The tools necessary for this snippet are meme-5.0.5. This can be installed by downloading the following software (https://meme-suite.org/meme/meme-software/5.0.5/meme-5.0.5.tar.gz) and running 
+
+```{bash}
+# MEME
+wget http://meme-suite.org/meme-software/5.0.5/meme-5.0.5.tar.gz
+tar zxf meme-5.0.5.tar.gz
+cd meme-5.0.5
+./configure --prefix=/hpc/grid/scratch/oziole/program/meme --with-url=http://meme-suite.org/ --enable-build-libxml2 --enable-build-libxslt
+make
+make test
+make install
+```
+
+
+* Files: human genome downloaded from chunk 1. The ten chosen genes in fasta format creted chunk 2.
 
 ```{bash}
 # Defining locations for programs and files
-mysub=/proprietary//proprietary/program/meme/libexec/meme-5.0.5/fasta-subsample
-myhomo=/proprietary/proprietary/data/sequencing/genomes/human/homo_sapiens.fa
-subhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_homo_sapiens.fa
-myout=/proprietary/proprietary/size_genome/data/genomes_human/
-genes=/proprietary/proprietary/size_genome/data/genes_human/theten.fa
+mysub=/root/program/meme/libexec/meme-5.0.5/fasta-subsample
+myhomo=/root/data/sequencing/genomes/human/homo_sapiens.fa
+subhomo=/root/data/sequencing/genomes/human/nospike_homo_sapiens.fa
+myout=/root/size_genome/data/genomes_human/
+genes=/root/size_genome/data/genes_human/theten.fa
 
 # Grabbing sequences to remove into a variable
 string=$(cat $genes | grep "^>" | sed 's/^>//g' | sed 's/\_test//g' | tr '\r\n' '\\|' | sed 's/^/\"/g' | sed 's/$/\"/g')
@@ -211,9 +235,13 @@ done
 
 ## Re-implanting "_test" transcripts into subsampled genomes
 
+* Taking the selected 10 transcripts and putting them back into the fasta files of subsampled genomes
+* Environment: This snippet was run in linux command line with no necessary tools.
+* Files: theten.fa created by chunk 2 and subsampled genomes created by chunk 3.
+
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human/
-genes=/proprietary/proprietary/size_genome/data/genes_human/theten.fa
+parent=/root/size_genome/data/genomes_human/
+genes=/root/size_genome/data/genes_human/theten.fa
 
 cd $parent
 for i in $(ls -1); do
@@ -222,9 +250,11 @@ done
 ```
 
 ## Indexing 9900 genomes using Salmon
+* Environment: This code was ran on an LSF commandline cluster. The only tool necessary is salmon (installation described above)
+* Files: re-implanted genomes from chunk 4.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human/
+parent=/root/size_genome/data/genomes_human/
 cd $parent
 
 # Indexing
@@ -232,7 +262,7 @@ for i in $(ls -1); do
 short=$(echo ${i} | sed 's/\.fa\.gz//g')
 my_genome=${parent}/${i}
 my_out=${parent}/${short}_index
-my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
 "${my_salmon} index \
 -t ${my_genome} \
@@ -243,19 +273,21 @@ done
 ```
 
 ## Submitting quantitation
-* The name of the selected HPA sample is itox0000633
+* The name of the selected HPA sample is itox0000633 (equivalent to the sample from HPA mentioned at top of script)
+* Environment: The script below was ran as a job on an LSF cluster. The only software necessary is salmon (as described above).
+* Files: Fastq files for HPA sample (https://www.ebi.ac.uk/ena/data/view/PRJEB6971) and indexed re-implanted genomes from chunk 4-5
 
 ```{bash}
 # Defining directories and samples
-parent=/proprietary/proprietary/size_genome/data/genomes_human/
+parent=/root/size_genome/data/genomes_human/
 cd $parent
-sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+sample=/root/size_genome/data/sample/itox000633
 name=itox000633
 
 for i in $(ls -1d *_index/); do
 short=$(echo ${i} | sed 's/\_index.*//g' | sed 's/mf\_//g')
 bsub -q medium -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
-"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+"/root/program/salmon-latest_linux_x86_64/bin/salmon quant \
 -i ${parent}/${i} \
 -p 4 \
 --validateMappings \
@@ -268,9 +300,12 @@ done
 
 ## Reducing full data to only test set of transcripts
 
+* Environment: These commands were ran in commandline on an LSF cluster. No software necessary.
+* Files: quantitation files produced from chunk above.
+
 ```{bash}
 # Defining directories
-parent=/proprietary/proprietary/size_genome/data/genomes_human/
+parent=/root/size_genome/data/genomes_human/
 cd $parent
 mkdir $parent/summary
 
@@ -285,7 +320,7 @@ cd summary
 mkdir only_target
 
 ## Fasta containing those transcripts
-genes=/proprietary/proprietary/size_genome/data/genes/theten.fa
+genes=/root/size_genome/data/genes/theten.fa
 
 # Subsampling quantitation files to only those transcripts
 for i in $(ls -1 *.sf); do
@@ -295,8 +330,11 @@ done
 
 ## Creating total per million counts per mapping
 
+* Environment: These commands were ran in commandline on an LSF cluster. No software necessary.
+* Files: Continued work with quantitation files created from chunks above.
+
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human/summary
+parent=/root/size_genome/data/genomes_human/summary
 cd $parent
 
 touch tots_summ.tsv
@@ -314,6 +352,10 @@ mv tots_summ.tsv ../../
 * Moved all quantitation files to local drive
 
 ## Summing human to gene level
+
+* Here we used tximport to read in the quantitation files
+* Environment: These commands were ran in R 3.6.1. The packages loaded via library() function are the only ones used in below chunk. 
+* Files: only file necessary is the gtf file for human annotation that can be downloaded via this link: (ftp://ftp.ensembl.org/pub/release-95/gtf/homo_sapiens/Homo_sapiens.GRCh38.95.gtf.gz). It is also downloaded by chunk 1. The other two files noted are created from chunks above.
 
 ```{r}
 library(GenomicFeatures)
@@ -333,7 +375,7 @@ head(tx2gene)
 colnames(tx2gene)<-c("tx","gid")
 
 ## Importing full length tpm
-orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig<-read.table("/root/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
 orig$Name<-gsub("\\..*","_test",orig$Name)
 small<-orig[,c("Name","TPM","NumReads")]
 colnames(small)<-c("gene","orig_tpm","orig_raw")
@@ -343,10 +385,10 @@ goi<-tx2gene %>% filter(tx %in% gsub("_test","",unique(small$gene))) %>% dplyr::
 txinterest<-tx2gene %>% filter(gid %in% goi[,1])
 
 ## Saving as file
-#write.table(txinterest[,1],"/proprietary/tpm_genome_analysis/data/human_sample/txinterest.txt", sep = "\n", col.names = FALSE, row.names = FALSE, quote = FALSE)
+#write.table(txinterest[,1],"/root/tpm_genome_analysis/data/human_sample/txinterest.txt", sep = "\n", col.names = FALSE, row.names = FALSE, quote = FALSE)
 
 ### reading in quant files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_gen/", "*sf",full.names=TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_gen/", "*sf",full.names=TRUE)
 gobj<-list()
 
 ### Cleaning up names to make them consistent
@@ -381,7 +423,7 @@ df$tx<-gennam2
 dat<-merge(df, txinterest, by = "tx")
 
 ## loading the total list
-tots<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/tots_summ.tsv", header = FALSE, stringsAsFactors = FALSE)
+tots<-read.table("/root/tpm_genome_analysis/data/human_sample/tots_summ.tsv", header = FALSE, stringsAsFactors = FALSE)
 colnames(tots)<-c("iter","tot")
 
 # Get tots
@@ -398,7 +440,7 @@ gendat$gid<-factor(gendat$gid,levels=c("ENSG00000091704","ENSG00000168928","ENSG
                                    "ENSG00000142676","ENSG00000138161","ENSG00000140688","ENSG00000154556","ENSG00000198561"))
 
 ## plotting - Not part of manuscript anymore
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig2b.jpeg", width = 2400, height = 1000, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/fig2b.jpeg", width = 2400, height = 1000, unit = "px")
 ggplot(gendat,
        aes(x = tot, y = log10(gene_tpm), color = size))+
   geom_jitter()+
@@ -417,7 +459,7 @@ ggplot(gendat,
 dev.off()
 
 ## Relaxed fig2b - Not part of manuscript anymore
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig2b_relaxed.jpeg", width = 2400, height = 1200, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/fig2b_relaxed.jpeg", width = 2400, height = 1200, unit = "px")
 ggplot(gendat,
        aes(x = tot, y = log10(gene_tpm), color = size))+
   geom_jitter()+
@@ -436,7 +478,7 @@ ggplot(gendat,
 dev.off()
 
 # Bringing in full sample's gene level tpm
-orig.file<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/", "*sf",full.names=TRUE)
+orig.file<-list.files("/root/tpm_genome_analysis/data/human_sample/", "*sf",full.names=TRUE)
 orig.txi<-tximport(orig.file, type = "salmon", tx2gene=tx2gene, ignoreTxVersion = TRUE)
 
 ## Taking out the tpm values
@@ -464,7 +506,7 @@ fdt_quant<- fdt %>%
             hi=quantile(logdiff, 0.9, na.rm = T))
 
 ## Plotting - Not part of manuscript anymore
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig.S1a.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/fig.S1a.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(fdt_quant,
        aes(x = ((size/228200)*100), fill = gid, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -501,7 +543,7 @@ fdt_raw_quant<- fdt.raw %>%
             hi=quantile(lograwdiff, 0.9, na.rm = T))
 
 ## Raw plot - Not part of manuscript anymore
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig.S1b.jpeg", width = 2600, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/fig.S1b.jpeg", width = 2600, height = 1000, unit = 'px')
 ggplot(fdt_raw_quant,
        aes(x = ((size/228200)*100), fill = gid, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -525,6 +567,8 @@ dev.off()
 
 # All gene transcripts removed
 ## Selecting the transcripts belonging to all 10 genes
+* Environment: These commands were ran in local R environment with th epackages loaded via library() as prerequisite. The only files necessary is the "theten.tsv" created in chunk 1 and the gtf annotation file from the chunk above.
+* Files: Only files needed are the gtf file for human annotation (explained above), tsv file for human genes selected (created from chunk 2)
 
 ```{r}
 library(dplyr)
@@ -533,7 +577,7 @@ library(data.table)
 library(GenomicFeatures)
 
 # loading the 10 genes
-df<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+df<-read.table("/root/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
 ten<-gsub("[.].*","",df$Name)
 
 ## Finding genes that those transcripts belong to
@@ -550,10 +594,10 @@ ten.genes<-tx2gene %>% filter(tx %in% ten) %>% dplyr::select(gid)
 ten.genes.transcripts<-tx2gene %>% filter(gid %in% ten.genes$gid) %>% dplyr::select(tx)
 
 ## Writing all transcripts into a table
-write.table(ten.genes.transcripts$tx,"/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_tx.tsv", sep = '\t', row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(ten.genes.transcripts$tx,"/root/tpm_genome_analysis/data/human_sample/thetengenes_tx.tsv", sep = '\t', row.names = FALSE, col.names = FALSE, quote = FALSE)
 
 # Reading in transcripts
-df<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_tx.tsv", sep = '\t', header = FALSE, stringsAsFactors = FALSE)
+df<-read.table("/root/tpm_genome_analysis/data/human_sample/thetengenes_tx.tsv", sep = '\t', header = FALSE, stringsAsFactors = FALSE)
 
 # Defining species
 sp <-  "hsapiens"
@@ -573,20 +617,22 @@ tseq <- getSequence(id = df,
 tseq$ensembl_transcript_id<-gsub("$","_test",tseq$ensembl_transcript_id)
 
 # Writing to a fasta file
-exportFASTA(tseq, "/proprietary/tpm_genome_analysis/data/human_sample/thetengenes.fa")
+exportFASTA(tseq, "/root/tpm_genome_analysis/data/human_sample/thetengenes.fa")
 ```
 
 ## Subsampling human genome
 * First taking the sequences of the selected transcripts (from all 10 genes they represent) out of the ensembl transcriptome
 * Subsampling into 99 different sizes (from 1-99% of original size based on number of transcripts included)
+* Environment: These scripts were ran in LSF cluster. The software necessary is meme-5.0.5, which has been previously described above. In brief: (https://meme-suite.org/meme/meme-software/5.0.5/meme-5.0.5.tar.gz) and running ```tar -xvzf meme-5.0.5.tar.gz```
 
+* Files: Transcript fasta created from chunk above; human genome downloaded from chunk 1.
 
 ```{bash}
-mysub=/proprietary//proprietary/program/meme/libexec/meme-5.0.5/fasta-subsample
-myhomo=/proprietary/proprietary/data/sequencing/genomes/human/homo_sapiens.fa
-subhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_tengenes_homo_sapiens.fa
-myout=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
-genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+mysub=/root/program/meme/libexec/meme-5.0.5/fasta-subsample
+myhomo=/root/data/sequencing/genomes/human/homo_sapiens.fa
+subhomo=/root/data/sequencing/genomes/human/nospike_tengenes_homo_sapiens.fa
+myout=/root/size_genome/data/genomes_human_tengenes/
+genes=/root/size_genome/data/genes_human/thetengenes.fa
 
 # Grabbing sequences to remove into a variable
 string=$(cat $genes | grep "^>" | sed 's/^>//g' | sed 's/\_test//g' | tr '\r\n' '\\|' | sed 's/^/\"/g' | sed 's/$/\"/g')
@@ -605,10 +651,12 @@ done
 ```
 
 ## Including test transcripts in all transcriptomes
+* Environment: ran on commandline LSF cluster. No required software
+* Files: All files necessary are generated from chunks above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
-genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+parent=/root/size_genome/data/genomes_human_tengenes/
+genes=/root/size_genome/data/genes_human/thetengenes.fa
 
 cd $parent
 for i in $(ls -1); do
@@ -617,9 +665,11 @@ done
 ```
 
 ## Indexing 9900 genomes
+* Environment: This was run as a job on LSF cluster. The only software required is salmon (described above).
+* Files: All files necessary are generated from chunks above (these are the fasta files, substted and re-spiked with the target transcripts)
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
+parent=/root/size_genome/data/genomes_human_tengenes/
 cd $parent
 
 # Indexing
@@ -627,7 +677,7 @@ for i in $(ls -1); do
 short=$(echo ${i} | sed 's/\.fa\.gz//g')
 my_genome=${parent}/${i}
 my_out=${parent}/${short}_index
-my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
 "${my_salmon} index \
 -t ${my_genome} \
@@ -638,17 +688,19 @@ done
 ```
 
 ## Quantitation of human HPA sample to all transcriptomes
+* Environment: This was run as a job on LSF cluster. The only software required is salmon (described above).
+* Files: Fastq files are from sample described before and fasta files are the same as used for chunk above.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/
+parent=/root/size_genome/data/genomes_human_tengenes/
 cd $parent
-sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+sample=/root/size_genome/data/sample/itox000633
 name=itox000633
 
 for i in $(ls -1d *_index/); do
 short=$(echo ${i} | sed 's/\_index.*//g' | sed 's/mf\_//g')
 bsub -q medium -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
-"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+"/root/program/salmon-latest_linux_x86_64/bin/salmon quant \
 -i ${parent}/${i} \
 -p 4 \
 --validateMappings \
@@ -661,9 +713,11 @@ done
 ```
 
 ## Moving quant files into summary folder
+* Environment: Commandline interface on LSF cluster. No software required.
+* Files: Files used are products from above chunk.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes
+parent=/root/size_genome/data/genomes_human_tengenes
 cd $parent
 
 mkdir summary
@@ -675,9 +729,11 @@ done
 ```
 
 ## Reducing to test transcripts only
+* Environment: Commandline interface on LSf cluster. No software required.
+* Files: Files necessary are producst of chunk above.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes
+parent=/root/size_genome/data/genomes_human_tengenes
 cd $parent
 
 # Making directory for sf files of only the genes of interest
@@ -685,7 +741,7 @@ cd summary
 mkdir only_target
 
 ## Fasta containing those genes
-genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+genes=/root/size_genome/data/genes_human/thetengenes.fa
 
 for i in $(ls -1 *.sf); do
 cat $i | grep '\_test' > $parent/summary/only_target/sub_${i}
@@ -694,9 +750,11 @@ done
 ```
 
 ## Calculating total transcript per million value for each quantitaion
+* Environment: Commandline bash, no software necessary
+* Files: Quantitation files created from chunks above.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_tengenes/summary
+parent=/root/size_genome/data/genomes_human_tengenes/summary
 cd $parent
 
 touch tots_summ.tsv
@@ -711,25 +769,30 @@ mv tots_summ.tsv ../../
 ```
 
 ## Grabbing data for all transcripts from the 10 genes in initial quantitation
+* Environment: Commandline bash.
+* Files: The list of genes selected created above, full genome quant file (provided). 
 
 ```{r}
 library(dplyr)
 library(biomaRt)
 library(data.table)
 
+
 ## Reading in transcripts
-tengenes<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes.tsv", sep = '\t', header=FALSE)
+tengenes<-read.table("/root/tpm_genome_analysis/data/human_sample/thetengenes.tsv", sep = '\t', header=FALSE)
 
 ## Loading human samples
-panc<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/quant.sf", header = TRUE, sep = '\t')
+panc<-read.table("/root/tpm_genome_analysis/data/human_sample/quant.sf", header = TRUE, sep = '\t')
 panc$Name<-gsub("[.].*","",panc$Name)
 
 # Saving expression values
 thetengenes<-panc %>% filter(panc$Name %in% tengenes$V1)
-write.table(thetengenes,"/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', row.names = FALSE, col.names = TRUE, quote = FALSE)
+write.table(thetengenes,"/root/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', row.names = FALSE, col.names = TRUE, quote = FALSE)
 ```
 
 ## Loading human test transcripts
+* Environment: Code ran in R environment with the list of used packages loaded through library() below
+* Files: The subset quantitation files from chunks above. Human annotation gtf file described above.
 
 ```{r}
 library(data.table)
@@ -737,12 +800,13 @@ library(ggplot2)
 library(dplyr)
 library(drc)
 library(GenomicFeatures)
+library(broom)
 
 # Creating a list of files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_tengenes_target/", pattern = "*sf", full.names = TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_tengenes_target/", pattern = "*sf", full.names = TRUE)
 gobj<-list()
 
-### Cleaning up names to ake them consistent
+### Cleaning up names to make them consistent
 nam1<-gsub(".*target\\/sub\\_","",gfiles)
 nam2<-gsub(".sf","",nam1)
 
@@ -767,7 +831,7 @@ colnames(df)<-c("iter","gene","gl","egl","tpm","raw","size")
 df$gene<-gsub("_test","", df$gene)
 
 ## Importing full length tpm
-orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig<-read.table("/root/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
 orig$Name<-gsub("\\..*","_test",orig$Name)
 small<-orig[,c("Name","TPM","NumReads")]
 colnames(small)<-c("gene","orig_tpm","orig_raw")
@@ -799,8 +863,11 @@ colnames(tx2gene)<-c("tx","gid")
 
 df_plot<-merge(df_full_quant,tx2gene, by.x = "gene",by.y = "tx")
 
+# Merging tx2gene to full data
+df_gene<-merge(df, tx2gene, by.x = "gene", by.y = "tx") %>% dplyr::rename(tid = gene)
+
 ## Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_fig1a.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/thetengenes_fig1a.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(df_plot,
        aes(x = ((size/228200)*100), fill = gene, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -823,7 +890,7 @@ ggplot(df_plot,
 dev.off()
 
 ## Plotting with lines representing pre-clinical species
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_fig1a_pc.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/thetengenes_fig1a_pc.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(df_plot,
        aes(x = ((size/228200)*100), fill = gene, color = gid))+
 #  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -855,7 +922,7 @@ df_raw_quant<- df_full %>%
 df_raw_plot<-merge(df_raw_quant,tx2gene, by.x = "gene",by.y = "tx")
 
 ## Raw plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_fig1b.jpeg", width = 2600, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/thetengenes_fig1b.jpeg", width = 2600, height = 1000, unit = 'px')
 ggplot(df_raw_plot,
        aes(x = ((size/228200)*100), fill = gene, color = gid))+
 #  geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -901,6 +968,59 @@ df.full<-merge(df.gid, small.gid, by = "gid")
 df.full$logreltpm<-log10(df.full$tpm)-log10(df.full$orig_tpm)
 df.full$logrelraw<-log10(df.full$raw)-log10(df.full$orig_raw)
 
+# Statistical test for difference from 0
+df.test<-df.full %>%
+  dplyr::select(gid, size, logreltpm) %>% 
+  group_by(gid,size) %>% 
+  arrange(size,gid) %>% 
+  filter(size != 225918) %>% 
+  summarise(pval = t.test(logreltpm)$p.value)
+
+ggplot(df.test,
+       aes(x = ((size/228200)*100), y = -log10(pval), color = gid))+
+  geom_line()+
+  geom_hline(yintercept = 5)+
+  xlab("Percent of full transcriptome")
+
+saveRDS(df.full, "C:/Users/OZIOLE/Desktop/projects/tpm_genome_analysis/data/human_sample/theten_relquant.rds")
+saveRDS(df.test, "C:/Users/OZIOLE/Desktop/projects/tpm_genome_analysis/data/human_sample/statistics_theten.rds")
+
+## KW with Dunn's post hoc
+df.test2<-df.full %>%
+  dplyr::select(size, logreltpm) %>%
+  group_by(size) %>%
+  arrange(!size)
+ 
+
+df.test2$size = factor (df.test2$size)
+
+ 
+
+kruskal.test (logreltpm ~ size, data = df.test2)
+test.res = dunn.test::dunn.test (df.test2$logreltpm, df.test2$size, method = "bh")
+indeces = c (grep (pattern = " - 225918$", x = test.res$comparisons),
+             grep (pattern = "^225918 - ", x = test.res$comparisons))
+
+res = data.frame (comparison = test.res$comparisons[indeces], 
+                  padj = test.res$P.adjusted[indeces])
+res$size1 = unlist (lapply (res$comparison, 
+                            FUN = function (x) return (as.numeric (unlist (str_split (x, " - "))[1]))
+                            ))
+res$size2 = unlist (lapply (res$comparison, 
+                            FUN = function (x) return (as.numeric (unlist (str_split (x, " - "))[2]))
+))
+
+ 
+
+res$subgenome = apply (cbind (res$size1, res$size2), 1, 
+                       FUN = function (x) return (min (x) / 2282))
+ 
+ggplot(res, aes(x = subgenome, y = padj))+
+  geom_line()+
+  geom_hline(yintercept = 0.05, col = "blue") +
+  scale_x_continuous (breaks = seq (0, 98, 5)) +
+  theme_light (base_size = 16)
+
 # Calculating error
 df.quant<- df.full %>% 
   dplyr::group_by(gid,size) %>% 
@@ -909,7 +1029,7 @@ df.quant<- df.full %>%
             hi=quantile(logreltpm, 0.9, na.rm = T))
 
 ## Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig1a.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig1a.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(df.quant,
        aes(x = ((size/228200)*100), fill = gid, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -939,7 +1059,7 @@ df.raw<- df.full %>%
             hi=quantile(logrelraw, 0.9, na.rm = T))
 
 ## Raw plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig1b.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig1b.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(df.raw,
        aes(x = ((size/228200)*100), fill = gid, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -965,7 +1085,7 @@ dev.off()
 #################################################################
 ### Looking at tots
 ## loading the total list
-tots<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/tots_summ.tsv", header = FALSE, stringsAsFactors = FALSE)
+tots<-read.table("/root/tpm_genome_analysis/data/human_sample/tots_summ.tsv", header = FALSE, stringsAsFactors = FALSE)
 colnames(tots)<-c("iter","tot")
 
 ## Merging to df
@@ -973,7 +1093,7 @@ dat<-merge(df.full,tots,by = "iter")
 
 ## Plotting
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig2a.jpeg", width = 2000, height = 1400, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig2a.jpeg", width = 2000, height = 1400, unit = "px")
 ggplot(dat,
        aes(x = tot, y = log10(tpm), color = size))+
   geom_jitter()+
@@ -991,7 +1111,7 @@ ggplot(dat,
         legend.title = element_text(size = 50))
 dev.off()
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/relaxed_tpm_vs_tots.jpeg", width = 2400, height = 1200, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/relaxed_tpm_vs_tots.jpeg", width = 2400, height = 1200, unit = "px")
 ggplot(dat,
        aes(x = tot, y = log10(tpm), color = size))+
   geom_jitter()+
@@ -1012,6 +1132,8 @@ dev.off()
 
 # Paralogs removed
 ## Removing all paralogs to explore effect
+* Environment: R with packages used loaded via library().
+* Files: Human gtf annotation file (described above). Table of selected genes from chunk 2. 
 
 ```{r}
 library(GenomicFeatures)
@@ -1031,7 +1153,7 @@ head(tx2gene)
 colnames(tx2gene)<-c("tx","gid")
 
 ## Importing full length tpm
-orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig<-read.table("/root/tpm_genome_analysis/data/human_sample/theten.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
 orig$Name<-gsub("\\..*","_test",orig$Name)
 small<-orig[,c("Name","TPM","NumReads")]
 colnames(small)<-c("gene","orig_tpm","orig_raw")
@@ -1199,17 +1321,19 @@ homolog2<-homolg[egid == genes, etid]
 para.transcripts<-tx2gene %>% filter(gid %in% homolog2$egid_human) %>% dplyr::select(tx)
 
 ## Writing paralogs into a table
-write.table(para.transcripts$tx,"/proprietary/tpm_genome_analysis/data/human_sample/homologs.txt", sep = '\t', row.names = FALSE, col.names = FALSE, quote = FALSE)
+write.table(para.transcripts$tx,"/root/tpm_genome_analysis/data/human_sample/homologs.txt", sep = '\t', row.names = FALSE, col.names = FALSE, quote = FALSE)
 ```
 
 ## Subsampling from nospike
+* Environment: Commandline bash environment. The meme-5.0.5 software is necessary (described above).
+* Files: The only files necessary are the genome with ten genes removed (created above) and the homolog list, created directly above.
 
 ```{bash}
-mysub=/proprietary//proprietary/program/meme/libexec/meme-5.0.5/fasta-subsample
-myhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_tengenes_homo_sapiens.fa
-subhomo=/proprietary/proprietary/data/sequencing/genomes/human/nospike_nopara_tengenes_homo_sapiens.fa
-myout=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
-genes=/proprietary/proprietary/size_genome/data/genes_human/homologs.txt
+mysub=/root/program/meme/libexec/meme-5.0.5/fasta-subsample
+myhomo=/root/data/sequencing/genomes/human/nospike_tengenes_homo_sapiens.fa
+subhomo=/root/data/sequencing/genomes/human/nospike_nopara_tengenes_homo_sapiens.fa
+myout=/root/size_genome/data/genomes_human_nopara/
+genes=/root/size_genome/data/genes_human/homologs.txt
 
 # Grabbing sequences to remove into a variable
 string=$(cat $genes |  tr '\r\n' '\\|' | sed 's/^/\"/g' | sed 's/$/\"/g')
@@ -1228,10 +1352,12 @@ done
 ```
 
 ## Including genes in nopara transcriptomes
+* Environment: Commandline bash
+* Files: The fasta file of the 10 selected genes (created above).
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
-genes=/proprietary/proprietary/size_genome/data/genes_human/thetengenes.fa
+parent=/root/size_genome/data/genomes_human_nopara/
+genes=/root/size_genome/data/genes_human/thetengenes.fa
 
 cd $parent
 for i in $(ls -1); do
@@ -1240,9 +1366,11 @@ done
 ```
 
 ## Indexing 9900 nopara genomes
+* Environment: Software necessary is salmon (described above). Submitted as a job on LSF linux cluster.
+* Files: The fasta files (paralogs removed, ten genes re-spiked in) created directly above.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+parent=/root/size_genome/data/genomes_human_nopara/
 cd $parent
 
 # Indexing
@@ -1250,7 +1378,7 @@ for i in $(ls -1); do
 short=$(echo ${i} | sed 's/\.fa\.gz//g')
 my_genome=${parent}/${i}
 my_out=${parent}/${short}_index
-my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 bsub -q medium -app large -J "${short}" -n 4,4 -M 4GB -R "span[hosts=1] rusage[mem=4GB]" -o "indexing.err" -e "indexing.err" \
 "${my_salmon} index \
 -t ${my_genome} \
@@ -1261,17 +1389,19 @@ done
 ```
 
 ## Submitting mapping to nopara transcriptomes
+* Environment: Software necessary is salmon (described above).
+* Files: Fastq files of sample (described above) and fasta files created directly above.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+parent=/root/size_genome/data/genomes_human_nopara/
 cd $parent
-sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+sample=/root/size_genome/data/sample/itox000633
 name=itox000633
 
 for i in $(ls -1d *_index/); do
 short=$(echo ${i} | sed 's/\_index.*//g')
 bsub -q medium -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
-"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+"/root/program/salmon-latest_linux_x86_64/bin/salmon quant \
 -i ${parent}/${i} \
 -p 4 \
 --validateMappings \
@@ -1283,9 +1413,11 @@ done
 ```
 
 ## Moving nopara and calculating tpmtot
+* Environment: Commandline bash.
+* Files: Quantitation files from command directly above.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_nopara/
+parent=/root/size_genome/data/genomes_human_nopara/
 cd $parent
 
 mkdir summary
@@ -1316,6 +1448,8 @@ cp tots_summ.tsv ../../tots_summ_nopara.tsv
 ```
 
 ## Exploring paralog influence
+* Environment: Local R with packages needed, loaded via library() function.
+* Files: Human genome annotation (described above); quantitation files created from command above.
 
 ```{r}
 library(GenomicFeatures)
@@ -1336,7 +1470,7 @@ head(tx2gene)
 colnames(tx2gene)<-c("tx","gid")
 
 ## Importing full length tpm
-orig<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
+orig<-read.table("/root/tpm_genome_analysis/data/human_sample/thetengenes_expr.tsv", sep = '\t', header = TRUE, stringsAsFactors = FALSE)
 orig$Name<-gsub("\\..*","_test",orig$Name)
 small<-orig[,c("Name","TPM","NumReads")]
 colnames(small)<-c("gene","orig_tpm","orig_raw")
@@ -1346,10 +1480,10 @@ goi<-tx2gene %>% filter(tx %in% gsub("_test","",unique(small$gene))) %>% dplyr::
 txinterest<-tx2gene %>% filter(gid %in% goi[,1])
 
 ## Saving as file
-#write.table(txinterest[,1],"/proprietary/tpm_genome_analysis/data/human_sample/txinterest.txt", sep = "\n", col.names = FALSE, row.names = FALSE, quote = FALSE)
+#write.table(txinterest[,1],"/root/tpm_genome_analysis/data/human_sample/txinterest.txt", sep = "\n", col.names = FALSE, row.names = FALSE, quote = FALSE)
 
 ### reading in quant files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_nopara_tengenes/", "*sf",full.names=TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_nopara_tengenes/", "*sf",full.names=TRUE)
 gobj<-list()
 
 ### Cleaning up names to ake them consistent
@@ -1423,7 +1557,7 @@ df.quant<- df.full %>%
             hi=quantile(logreltpm, 0.9, na.rm = T))
 
 ## Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS2a.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS2a.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(df.quant,
        aes(x = ((size/228200)*100), fill = gid, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -1453,7 +1587,7 @@ df.raw<- df.full %>%
             hi=quantile(logrelraw, 0.9, na.rm = T))
 
 ## Raw plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS2b.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS2b.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(df.raw,
        aes(x = ((size/228200)*100), fill = gid, color = gid))+
   geom_ribbon(aes(ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -1476,7 +1610,7 @@ ggplot(df.raw,
 dev.off()
 
 # Loading tots
-tots<-read.table("/proprietary/tpm_genome_analysis/data/human_sample/tots_summ_nopara.tsv", header = FALSE, stringsAsFactors = FALSE)
+tots<-read.table("/root/tpm_genome_analysis/data/human_sample/tots_summ_nopara.tsv", header = FALSE, stringsAsFactors = FALSE)
 colnames(tots)<-c("iter","tot")
 
 # Get tots
@@ -1499,7 +1633,7 @@ joy <- gendat %>%  group_by(gid) %>%
        mutate(gid=factor(gid, unique(gid)))
 
 # Fig s3b
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS3b.jpeg",width = 2000, height = 1400, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS3b.jpeg",width = 2000, height = 1400, unit = "px")
 ggplot(joy,
        aes(x=log10(gene_tpm), y=gid, height = ..density.., fill = gid))+
   geom_joy(scale=4, lwd = 0.8)+
@@ -1516,7 +1650,10 @@ ggplot(joy,
 graphics.off()
 ```
 
+# annotate
 ##  TMM on TPM in Naqvi dataset
+* Environment: Local R with packages necessary loaded via library() function.
+* Files: 
 
 ```{r}
 library(data.table)
@@ -1576,10 +1713,10 @@ ortholog.list <- lapply(preclinical.species, get_orthologs)
 ortholog <- rbindlist(ortholog.list)
 
 # Loading Naqvi data
-cyno<-fread("/proprietary/zoomap/data/naqvi/cyno.salmon.tximport.tpm.txt")
-dog<-fread("/proprietary/zoomap/data/naqvi/dog.salmon.tximport.tpm.txt")
-mouse<-fread("/proprietary/zoomap/data/naqvi/mouse.salmon.tximport.tpm.txt")
-rat<-fread("/proprietary/zoomap/data/naqvi/rat.salmon.tximport.tpm.txt")
+cyno<-fread("/root/zoomap/data/naqvi/cyno.salmon.tximport.tpm.txt")
+dog<-fread("/root/zoomap/data/naqvi/dog.salmon.tximport.tpm.txt")
+mouse<-fread("/root/zoomap/data/naqvi/mouse.salmon.tximport.tpm.txt")
+rat<-fread("/root/zoomap/data/naqvi/rat.salmon.tximport.tpm.txt")
 
 ## Converting data to long format
 cyno.m<-melt(cyno)
@@ -1627,7 +1764,7 @@ colnames(dat)<-gsub("_human","", colnames(dat))
 for i in $(ls -1d *_index/); do
 short=$(echo ${i} | sed 's/\_index.*//g')
 bsub -q express -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
-"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+"/root/program/salmon-latest_linux_x86_64/bin/salmon quant \
 -i ${parent}/${i} \
 -p 4 \
 --validateMappings \
@@ -1745,7 +1882,7 @@ subw<-is.finite(tot.dat[,(tmm_diff)]) & !is.na(tot.dat[,(tmm_diff)])
 tot.dat[subw,median(tmm_diff), by = (spnm)]
 
 ## Visualize
-# jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS13.jpeg", width = 2600, height = 1000, unit = "px")
+# jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS13.jpeg", width = 2600, height = 1000, unit = "px")
 ggplot(tot.dat[subw,],
        aes(x = spnm, y = tmm_diff, fill = spnm))+
   geom_violin(draw_quantiles = 0.5)+
@@ -1817,7 +1954,7 @@ mstot<-melt(stot, id.vars = c("egid","snm","spnm"),
 
 mstot$method<-factor(mstot$method, levels = c("tpm_diff","tmm_diff"))
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS13.jpeg", width = 2600, height = 2000, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS13.jpeg", width = 2600, height = 2000, unit = "px")
 ggplot(mstot[!spnm == "human"],
        aes(x = spnm, y = value, fill = method))+
   geom_split_violin()+
@@ -1837,7 +1974,11 @@ graphics.off()
 
 ## Housekeeeping genes analysis with Naqvi data
 
+* Environment: Local R environment with libraries required, loaded via library()
+* Files: The RDS file loaded here is provided in the repository and submission.
+
 ```{r}
+
 rm (list = ls ())
 # setting the working directory
 #setwd ("/Users/arats/Desktop/Projects/Zoomap_Correction Factor/HouseKeeping_genes/") 
@@ -1846,6 +1987,7 @@ library (dplyr)
 library (ggplot2)
 library (ggrepel)
 library (tidyverse)
+library (data.table)
 
 ## Defining geom_split_violin
 GeomSplitViolin <- ggproto("GeomSplitViolin", GeomViolin, 
@@ -1904,7 +2046,7 @@ double_vioplots_with_medians_species = function (mydata, coi) {
          aes(x = factor (get (coi), level = c ('cyno', 'dog', 'mouse', 'rat', 'human')), 
              y = value, fill = factor (method)))+
     geom_split_violin(show.legend = F)+
-    theme_classic()+
+    theme_classic(base_size = 16)+
     geom_point (data = median.points.data, aes (x, y, fill = NA), #shape = factor (ptnm)), 
                 show.legend = F) + 
     geom_label_repel (data = median.points.data, aes (x, y, fill = NA, label = y), 
@@ -1922,21 +2064,26 @@ double_vioplots_with_medians_tissues = function (mydata, coi) {
   mylist = unique (mydata[[coi]])
   n = length (mylist)
   for (i in 1:n) {
-    the.info = data.frame (x = i - 0.07, 
-                           y = round (median (mydata$value[which (mydata[[coi]] == mylist[i] & 
+    tis = mylist[i]
+    the.info = data.frame (tissue = tis, 
+                           x = i - 0.07, 
+                           y = round (median (mydata$value[which (mydata[[coi]] == tis & 
                                                                     mydata$method == "before")]), 3), 
-                           ptnm = "p"
+                           method = "before"
     )
     median.points.data = rbind (median.points.data, the.info)
     
-    the.info = data.frame (x = i + 0.07, 
-                           y = round (median (mydata$value[which (mydata[[coi]] == mylist[i] & 
+    the.info = data.frame (tissue = tis, 
+                           x = i + 0.07, 
+                           y = round (median (mydata$value[which (mydata[[coi]] == tis & 
                                                                     mydata$method == "after")]), 3), 
-                           ptnm = "m"
+                           method = "after"
     )
     median.points.data = rbind (median.points.data, the.info)
     
   }
+  
+  #fwrite (median.points.data, "./medPntsData.csv", sep = ",")
   
   ggplot(mydata, aes(x = get (coi), y = value, fill = factor (method)))+
     geom_split_violin(show.legend = F)+
@@ -1954,7 +2101,7 @@ double_vioplots_with_medians_tissues = function (mydata, coi) {
 
 #################################################
 
-my.data = readRDS ("./naqvi_hkgenes.rds")
+my.data = readRDS ("./Housekeeping_genes/naqvi_hkgenes.rds")
 
 n.entries = nrow (my.data)
 the.data = data.frame (onm = my.data$onm, 
@@ -1964,23 +2111,30 @@ the.data = data.frame (onm = my.data$onm,
                        method = c (rep ("before", n.entries), rep ("after", n.entries))
 )
 
-double_vioplots_with_medians_species (mydata = the.data, coi = 'spnm')
+the.data$method = as.factor (the.data$method)
 
-#double_vioplots_with_medians (mydata = the.data %>% filter (spnm == 'human'), coi = 'onm')
+#double_vioplots_with_medians_species (mydata = the.data, coi = 'spnm')
+
+double_vioplots_with_medians_species (mydata = the.data %>% filter (spnm != 'human'), coi = 'spnm')
+
 double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'cyno'), coi = 'onm')
 double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'dog'), coi = 'onm')
 double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'rat'), coi = 'onm')
 double_vioplots_with_medians_tissues (mydata = the.data %>% filter (spnm == 'mouse'), coi = 'onm')
 
 dev.off ()
+
 ```
 
 # Historic ensembl annotations
 
 ## Getting historic transcriptomees
 
+* Environment: Commandline bash environment
+* Files: none
+
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_historic/fasta
+parent=/root/size_genome/data/genomes_historic/fasta
 cd $parent
 
 wget ftp://ftp.ensembl.org/pub/release-43/homo_sapiens_43_36e/data/fasta/cdna/Homo_sapiens.NCBI36.43.cdna.all.fa.gz -O hsapiens.43.cdna.all.fa.gz
@@ -1999,9 +2153,11 @@ done
 ```
 
 ## GTF for those files
+* Environment: commandline bash environment
+* Files: none
 
 ```{bash}
-parent_gtf=/proprietary/proprietary/size_genome/data/genomes_historic/gtf
+parent_gtf=/root/size_genome/data/genomes_historic/gtf
 cd $parent_gtf
 
 wget ftp://ftp.ensembl.org/pub/release-43/homo_sapiens_43_36e/data/gtf/Homo_sapiens.NCBI36.43.gtf.gz -O hsapiens.43.gtf.gz
@@ -2018,9 +2174,11 @@ done
 ```
 
 ## Indexing historic genomes
+* Environment: Using salmon (as described above) in LSF commandline environment
+* Files: Files downloaded with the two chunks above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_historic/fasta/
+parent=/root/size_genome/data/genomes_historic/fasta/
 cd $parent
 
 # Indexing
@@ -2028,7 +2186,7 @@ for i in $(ls -1); do
 short=$(echo ${i} | sed 's/\.fa\.gz//g')
 my_genome=${parent}/${i}
 my_out=${parent}/${short}_index
-my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 bsub -q express -app large -J "${short}" -n 4,4 -M 4GB -R "span[hosts=1] rusage[mem=4GB]" -o "indexing.err" -e "indexing.err" \
 "${my_salmon} index \
 -t ${my_genome} \
@@ -2039,17 +2197,19 @@ done
 ```
 
 ## Mapping to historic genomes
+* Environment: Salmon (as described above) with LSF commandline bash environment
+* Files: Generated with chunks directly above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_historic/fasta/
+parent=/root/size_genome/data/genomes_historic/fasta/
 cd $parent
-sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+sample=/root/size_genome/data/sample/itox000633
 name=itox000633
 
 for i in $(ls -1d *_index/); do
 short=$(echo ${i} | sed 's/\_index.*//g')
 bsub -q express -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
-"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+"/root/program/salmon-latest_linux_x86_64/bin/salmon quant \
 -i ${parent}/${i} \
 -p 4 \
 --validateMappings \
@@ -2068,6 +2228,8 @@ done
 ```
 
 ## Historic view
+* Environment: Local R environment with packages loaded from library() function.
+* Files: Quantitaiton files generated with chunk directly above.
 
 ```{r}
 library(GenomicFeatures)
@@ -2079,7 +2241,7 @@ library(ggplot2)
 library(hrbrthemes)
 library(ggjoy)
 
-gtf.files<-list.files(path="/proprietary/tpm_genome_analysis/data/human_sample/historic/gtf/", pattern = "*gz", full.names = TRUE)
+gtf.files<-list.files(path="/root/tpm_genome_analysis/data/human_sample/historic/gtf/", pattern = "*gz", full.names = TRUE)
 
 tx2gene<-list()
 for(i in 1:length(gtf.files)){
@@ -2106,7 +2268,7 @@ for(i in 1:length(tx2gene)){
 }
 
 # Creating a list of files
-hfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/historic/fasta/", pattern = "*sf", full.names = TRUE)
+hfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/historic/fasta/", pattern = "*sf", full.names = TRUE)
 hobj<-list()
 
 ### Cleaning up names to ake them consistent
@@ -2146,7 +2308,7 @@ mtpm<-merge(mtpm,size2, by = "rel")
 mtpm2<-mtpm[is.finite(mtpm$tpm),]
 
 # Plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/shared.tpm.jpeg",width = 1200, height = 1600, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/shared.tpm.jpeg",width = 1200, height = 1600, unit = "px")
 ggplot(mtpm2,
        aes(x=tpm, y=rel, height = ..density.., fill = size))+
   geom_joy(scale=5)+
@@ -2158,7 +2320,7 @@ ggplot(mtpm2,
         strip.text.y = element_text(angle = 180, hjust = 1))
 graphics.off()
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.tpm.jpeg",width = 1200, height = 1600, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/time.tpm.jpeg",width = 1200, height = 1600, unit = "px")
 ggplot(mtpm2,
        aes(x=rel, y=tpm, color = gid))+
   geom_line(aes(group=gid), alpha = 0.3)+
@@ -2179,7 +2341,7 @@ quant.tpm<- mtpm2 %>%
             hi=quantile(tpm, 0.9, na.rm = T))
 
 ## Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.tpm.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/time.ribbon.tpm.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(quant.tpm,
        aes(x = rel, color = "firebrick2", fill = "firebrick2"))+
   geom_ribbon(aes(group =1, ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -2233,7 +2395,7 @@ quant.raw<- mraw2 %>%
             hi=quantile(raw, 0.9, na.rm = T))
 
 ## Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.raw.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/time.ribbon.raw.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(quant.raw,
        aes(x = rel, color = "firebrick2", fill = "firebrick2"))+
   geom_ribbon(aes(group =1, ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -2285,7 +2447,7 @@ quant.length<- mlength2 %>%
             hi=quantile(length, 0.9, na.rm = T))
 
 ## Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.length.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/time.ribbon.length.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(quant.length,
        aes(x = rel, color = "firebrick2", fill = "firebrick2"))+
   geom_ribbon(aes(group =1, ymin = low, ymax = hi), alpha = 0.25, colour = NA) +
@@ -2312,7 +2474,7 @@ quant<-rbind(quant.tpm,quant.raw,quant.length)
 
 ## Plot all
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/time.ribbon.all.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/time.ribbon.all.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(quant,
        aes(x = rel, color = metric, fill = metric, by = metric))+
   geom_ribbon(aes(group =metric, ymin = low, ymax = hi), alpha = 0.2, colour = NA) +
@@ -2336,7 +2498,7 @@ mmerge.tr<-merge(mtpm2,mraw2, by = c("gid","rel"))
 mmerge<-merge(mmerge.tr,mlength2, by = c("gid","rel"))
 
 # Relationship between gene length and raw reads
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/historic/length.v.raw.jpeg", width = 2400, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/historic/length.v.raw.jpeg", width = 2400, height = 1000, unit = 'px')
 ggplot(mmerge %>% filter(rel == "43"),
        aes(x=length, y = raw, color = tpm))+
   geom_point(cex = 3)+
@@ -2361,6 +2523,8 @@ ggplot(mmerge %>% filter(gid %in% long$gid),
 
 # Transcript annotation differences
 ## Ortholog genome only: transcripts per gene
+* Environment: Local R environment with packages loaded via library() function
+* Files: Gtf annotation files for all species examined (downloaded with chunk1)
 
 ```{r}
 library(RMySQL)
@@ -2498,7 +2662,7 @@ rl$image<-image
 rl$species<-factor(rl$species,levels=c("cyno","dog","rat","mouse"))
 
 # plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig3b.jpeg", width = 900, height = 900, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/fig3b.jpeg", width = 900, height = 900, unit = "px")
 ggplot(rl,
        aes(x=species, y=native/human))+
   geom_image(aes(image=image),size=0.15)+
@@ -2559,6 +2723,8 @@ mus.smaller<-mus.red[sub.mus,]
 # Reducing transcriptome size
 
 ## Subsampling transcripts
+* Environment: Local R environment with packages loaded via library() function
+* Files: Gtf annotation files for all species examined (downloaded with chunk1)
 
 ```{r}
 library(RMySQL)
@@ -2699,7 +2865,7 @@ rl$image<-image
 rl$species<-factor(rl$species,levels=c("cyno","dog","rat","mouse"))
 
 # plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/fig4b.jpeg", width = 900, height = 900, unit = "px")
+jpeg("/root/tpm_genome_analysis/data/human_sample/fig4b.jpeg", width = 900, height = 900, unit = "px")
 ggplot(rl,
        aes(x=species, y=native/human))+
   geom_image(aes(image=image),size=0.15)+
@@ -2872,7 +3038,7 @@ for(i in 1:100){
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_cyno", i, "fa", sep = ".", collapse = "."))
+  exportFASTA(tseq, paste("/root/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_cyno", i, "fa", sep = ".", collapse = "."))
 }
 
 # dog
@@ -2893,7 +3059,7 @@ for(i in 1:100){
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_dog", i, "fa", sep = ".", collapse = "."))
+  exportFASTA(tseq, paste("/root/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_dog", i, "fa", sep = ".", collapse = "."))
 }
 
 # rat
@@ -2914,7 +3080,7 @@ for(i in 1:100){
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_rat", i, "fa", sep = ".", collapse = "."))
+  exportFASTA(tseq, paste("/root/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_rat", i, "fa", sep = ".", collapse = "."))
 }
 
 # mus
@@ -2935,21 +3101,16 @@ for(i in 1:100){
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, paste("/proprietary/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_mus", i, "fa", sep = ".", collapse = "."))
+  exportFASTA(tseq, paste("/root/tpm_genome_analysis/paper/giga_submission/data/tx_sub/hs_mus", i, "fa", sep = ".", collapse = "."))
 }
 ```
 
-dat.cyno[, 
-                             .(val = sample(homo.tx, 
-                                            size = cyno.freq[1], 
-                                            replace = FALSE, 
-                                            prob = NULL)), 
-                             by = homo.gid]
-
 ## Indexing 400 subsampled genomes
+* Environment: Salmon (described above) ran in a LSF commandline bash env
+* Files: Genomes generated from chunk above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+parent=/root/size_genome/data/genomes_human_trpg/
 cd $parent
 
 # Indexing
@@ -2957,7 +3118,7 @@ for i in $(ls -1); do
 short=$(echo ${i} | sed 's/\.fa//g')
 my_genome=${parent}/${i}
 my_out=${parent}/${short}_index
-my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
 "${my_salmon} index \
 -t ${my_genome} \
@@ -2968,6 +3129,8 @@ done
 ```
 
 ## Adding full length ortho transcriptome
+* Environment: Local R environment with packages loaded via library() function
+* Files: none
 
 ```{r}
 # cyno
@@ -2986,7 +3149,7 @@ done
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_cyno_full.fa")
+  exportFASTA(tseq, "/root/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_cyno_full.fa")
 
 # dog
 
@@ -3005,7 +3168,7 @@ done
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_dog_full.fa")
+  exportFASTA(tseq, "/root/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_dog_full.fa")
   
 # rat
 
@@ -3024,7 +3187,7 @@ done
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_rat_full.fa")
+  exportFASTA(tseq, "/root/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_rat_full.fa")
 
 # mus
 
@@ -3043,14 +3206,16 @@ done
                       mart = gene_mart)
   
   # Writing to a fasta file
-  exportFASTA(tseq, "/proprietary/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_mus_full.fa")
+  exportFASTA(tseq, "/root/tpm_genome_analysis/paper/giga_submission/data/trpg/hs_mus_full.fa")
 
 ```
 
 ## Indexing full ortho transcriptomes
+* Environment: Salmon (described above) ran in a LSF commandline bash env
+* Files: Genomes generated from chunk above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+parent=/root/size_genome/data/genomes_human_trpg/
 cd $parent
 
 # Indexing
@@ -3058,7 +3223,7 @@ for i in $(ls -1 *full*); do
 short=$(echo ${i} | sed 's/\.fa//g')
 my_genome=${parent}/${i}
 my_out=${parent}/${short}_index
-my_salmon=/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon
+my_salmon=/root/program/salmon-latest_linux_x86_64/bin/salmon
 bsub -q medium -app large -J "${short}" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "indexing.err" -e "indexing.err" \
 "${my_salmon} index \
 -t ${my_genome} \
@@ -3069,17 +3234,19 @@ done
 ```
 
 ## Mapping sample to various transcriptomes
+* Environment: Salmon (described above) ran in a LSF commandline bash env
+* Files: Genomes generated from chunk above and sample fastq used throughout.
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+parent=/root/size_genome/data/genomes_human_trpg/
 cd $parent
-sample=/proprietary/proprietary/size_genome/data/sample/itox000633
+sample=/root/size_genome/data/sample/itox000633
 name=itox000633
 
 for i in $(ls -1d *_index/); do
 short=$(echo ${i} | sed 's/\_index.*//g')
 bsub -q express -app large -J "${short}.maping" -n 4,4 -M 32GB -R "span[hosts=1] rusage[mem=32GB]" -o "${short}.mapping.err" -e "${short}.mapping.err" \
-"/proprietary/proprietary/program/salmon-latest_linux_x86_64/bin/salmon quant \
+"/root/program/salmon-latest_linux_x86_64/bin/salmon quant \
 -i ${parent}/${i} \
 -p 4 \
 --validateMappings \
@@ -3091,9 +3258,11 @@ done
 ```
 
 ## Move files to summary folder
+* Environment: Commandline
+* Files: quantitation files from chunk above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+parent=/root/size_genome/data/genomes_human_trpg/
 cd $parent
 
 mkdir summary
@@ -3105,9 +3274,11 @@ done
 ```
 
 ## Getting mapping rates
+* Environment: Commandline
+* Files: quantitation files from chunk above
 
 ```{bash}
-parent=/proprietary/proprietary/size_genome/data/genomes_human_trpg/
+parent=/root/size_genome/data/genomes_human_trpg/
 cd $parent
 
 
@@ -3118,6 +3289,8 @@ paste mapping.txt rate.txt > mapping_rate.txt
 ```
 
 ## Reduced transcriptome effects
+* Environment: Local R environment with packages loaded via library() function
+* Files: Genomes generated from chunk above and gtf downloaded from chunk1
 
 ```{r}
 library(RMySQL)
@@ -3138,7 +3311,7 @@ head(homo.tx2gene)
 colnames(homo.tx2gene)<-c("tx","gid")
 
 ### reading in quant files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg/", "*full.sf",full.names=TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_trpg/", "*full.sf",full.names=TRUE)
 gobj<-list()
 
 ### Cleaning up names to ake them consistent
@@ -3172,7 +3345,7 @@ spnam2<-gsub("\\_full","",spnam)
 gendat.full$sp<-spnam2
 
 # Adding the rest of the files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg/", "*[0-9].sf",full.names=TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_trpg/", "*[0-9].sf",full.names=TRUE)
 gobj<-list()
 
 ### Cleaning up names to ake them consistent
@@ -3222,7 +3395,7 @@ gendat2$sp <- factor(gendat2$sp, levels = c("cyno","dog","rat","mus"))
 gendat2$ldiff<-(gendat2$sum_gl_sub/gendat2$sum_gl_full)*100
 
 # Plot
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig.S4a.jpeg", width = 1400, height = 1400, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig.S4a.jpeg", width = 1400, height = 1400, unit = 'px')
 ggplot(gendat2,
        aes(x = sp, y = tpm_logdiff, fill = sp))+
   geom_violin(draw_quantiles = 0.5, scale = "width")+
@@ -3235,7 +3408,7 @@ ggplot(gendat2,
         axis.title = element_text(size=50))
 graphics.off()
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig.S4b.jpeg", width = 1400, height = 1400, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig.S4b.jpeg", width = 1400, height = 1400, unit = 'px')
 ggplot(gendat2,
        aes(x = sp, y = raw_logdiff, fill = sp))+
   geom_violin(draw_quantiles = 0.5, scale = "width")+
@@ -3249,7 +3422,7 @@ ggplot(gendat2,
 graphics.off()
 
 # Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig4a.jpeg", width = 1300, height = 2000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig4a.jpeg", width = 1300, height = 2000, unit = 'px')
 ggplot(gendat2,
        aes(x=ldiff,y=tpm_logdiff,color=sp))+
   geom_point(cex = .2, alpha = .2)+
@@ -3265,7 +3438,7 @@ ggplot(gendat2,
         strip.text = element_text(size=30))
 graphics.off()
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig4b.jpeg", width = 1300, height = 2000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig4b.jpeg", width = 1300, height = 2000, unit = 'px')
 ggplot(gendat2,
        aes(x=ldiff,y=raw_logdiff,color=sp))+
   geom_point(cex = .2, alpha = .2)+
@@ -3281,7 +3454,7 @@ ggplot(gendat2,
         strip.text = element_text(size=30))
 graphics.off()
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_fig5.jpeg", width = 2000, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_fig5.jpeg", width = 2000, height = 1000, unit = 'px')
 ggplot(gendat2,
        aes(x=raw_logdiff,y=tpm_logdiff,color=ldiff))+
   geom_point(cex = .2, alpha = .2)+
@@ -3327,7 +3500,7 @@ dat.sim<-merge(list.sim,mean_ghigh, by = "sp")
 
 dat.sim$sp<-factor(dat.sim$sp, levels = c("cyno","dog","rat","mus"))
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS5a.jpeg", width = 2000, height = 800, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS5a.jpeg", width = 2000, height = 800, unit = 'px')
 ggplot(dat.sim,
        aes(x = val, color = sp))+
   geom_histogram(binwidth = 0.0001)+
@@ -3368,7 +3541,7 @@ dat.len.sim<-merge(list.len.sim,mean_len_ghigh, by = "sp")
 
 dat.len.sim$sp<-factor(dat.len.sim$sp, levels = c("cyno","dog","rat","mus"))
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS5b.jpeg", width = 2000, height = 800, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS5b.jpeg", width = 2000, height = 800, unit = 'px')
 ggplot(dat.len.sim,
        aes(x = val, color = sp))+
   geom_histogram(binwidth = 10)+
@@ -3389,7 +3562,7 @@ graphics.off()
 ### Testing the overestimated genes
 ghighall<-gendat2 %>% filter(gid %in% unique(ghigh$gid))
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS7a.jpeg", width = 2600, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS7a.jpeg", width = 2600, height = 1000, unit = 'px')
 ggplot(ghighall %>% filter(sp == "cyno"),
        aes(x=raw_logdiff, y=tpm_logdiff, color=ldiff))+
   geom_point(aes(size = ldiff), alpha = 0.2)+
@@ -3412,7 +3585,7 @@ graphics.off()
 ## Testing not those
 glowall<-gendat2 %>% filter(!gid %in% unique(ghigh$gid))
 
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS7b.jpeg", width = 2600, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS7b.jpeg", width = 2600, height = 1000, unit = 'px')
 ggplot(glowall %>% filter(sp == "cyno"),
        aes(x=raw_logdiff, y=tpm_logdiff, color=ldiff))+
   geom_point(aes(size = ldiff), alpha = 0.2)+
@@ -3445,6 +3618,9 @@ ggplot(gall,
 ```
 
 ## TMM correction for reduced representation txtomes
+* Environment: Local R environment with packages loaded via library() function
+* Files: Genomes generated from chunks above
+
 ```{r}
 library(data.table)
 library(GenomicFeatures)
@@ -3461,7 +3637,7 @@ head(homo.tx2gene)
 colnames(homo.tx2gene)<-c("tx","gid")
 
 ### reading in quant files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg/", "*cyno_full.sf",full.names=TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_trpg/", "*cyno_full.sf",full.names=TRUE)
 gobj<-list()
 
 ### Cleaning up names to ake them consistent
@@ -3492,7 +3668,7 @@ gendat.full<-dat.full[,.(final_gene_tpm=sum(tpm), sum_gl_full=sum(gl), sum_raw_f
 # Adding rest of files
 
 ### reading in quant files
-gfiles<-list.files("/proprietary/tpm_genome_analysis/data/human_sample/quant_trpg_short/", "*cyno",full.names=TRUE)
+gfiles<-list.files("/root/tpm_genome_analysis/data/human_sample/quant_trpg_short/", "*cyno",full.names=TRUE)
 gfiles<-head(gfiles,n=100)
 gobj<-list()
 
@@ -3556,7 +3732,7 @@ gendat2$tmm_logdiff<-log10(gendat2$tmm)-log10(gendat2$final_gene_tpm)
 gendat2$ldiff<-(gendat2$sum_gl_sub/gendat2$sum_gl_full)*100
 
 # Plotting
-jpeg("/proprietary/tpm_genome_analysis/data/human_sample/gid_figS9.jpeg", width = 2000, height = 1000, unit = 'px')
+jpeg("/root/tpm_genome_analysis/data/human_sample/gid_figS9.jpeg", width = 2000, height = 1000, unit = 'px')
 ggplot(gendat2,
        aes(x=raw_logdiff, y=tmm_logdiff, color=ldiff))+
   geom_point(aes(size = ldiff), alpha = 0.2)+
